@@ -34,7 +34,7 @@ def search():
     if query:
         results = cards.find({'name': {'$regex': query, '$options': 'i'}})
     else:
-        results = cards.find().limit(20)
+        results = cards.find().sort("analysis.analyzed_at", -1).limit(100)
     return render_template('search.html', cards=results, query=query)
 
 @app.route('/card/<uuid>')
