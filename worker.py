@@ -13,11 +13,13 @@ from datetime import datetime
 from typing import Dict, Optional
 import ollama
 from pymongo import MongoClient
+from dotenv import load_dotenv
+load_dotenv()
 
 # --- Config ---
 LLM_MODEL = os.getenv('LLM_MODEL', 'llama3.1:latest')
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
-DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/1387562115727888384/3ixaRfIBQFfpyxk3YrmofsbcuA5h8ar0O1Edzb0vEXEbsbYQScxVM79i24M0y1pa_5Mh')
+DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 MTGABYSS_BASE_URL = os.getenv('MTGABYSS_BASE_URL', 'http://localhost:5000')
 SCRYFALL_API_BASE = 'https://api.scryfall.com'
 
@@ -28,10 +30,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- MongoDB ---
-client = MongoClient(MONGODB_URI)
-db = client.mtg
-cards = db.cards
+# # --- MongoDB ---
+# client = MongoClient(MONGODB_URI)
+# db = client.mtg
+# cards = db.cards
 
 def fetch_random_card() -> Optional[Dict]:
     try:
@@ -102,34 +104,25 @@ def generate_analysis(card: Dict) -> Optional[str]:
         logger.error(f"LLM error: {e}")
         return None
 
-def save_to_database(card: Dict, analysis: str) -> bool:
+def save_to_database(card: dict, analysis: str) -> bool:
+    """Send analysis to Flask API endpoint instead of writing directly to MongoDB."""
     try:
-        doc = {
-            'uuid': card['id'],
-            'name': card['name'],
-            'mana_cost': card.get('mana_cost', ''),
-            'type_line': card.get('type_line', ''),
-            'oracle_text': card.get('oracle_text', ''),
-            'flavor_text': card.get('flavor_text', ''),  # <-- Add this line
-            'power': card.get('power'),
-            'toughness': card.get('toughness'),
-            'imageUris': card.get('image_uris', {}),
-            'scryfall_uri': card.get('scryfall_uri', ''),
-            'set_name': card.get('set_name', ''),
-            'rarity': card.get('rarity', ''),
-            'artist': card.get('artist', ''),  # Optional: add artist too
-            'analysis': {
-                'long_form': analysis,
-                'analyzed_at': datetime.now().isoformat(),
-                'model_used': LLM_MODEL
-            },
-            'created_at': datetime.now().isoformat()
+        payload = {
+            "uuid": card["id"],
+            "analysis": analysis,
+            "card_data": card  # send the full card dict!
         }
-        result = cards.update_one({'uuid': card['id']}, {'$set': doc}, upsert=True)
-        logger.info(f"Saved {card['name']} to database")
-        return True
+        api_url = f"{MTGABYSS_BASE_URL}/api/submit_work"
+        resp = requests.post(api_url, json=payload, timeout=30)
+        resp.raise_for_status()
+        if resp.json().get("status") == "ok":
+            logger.info(f"Submitted analysis for {card['name']} to API")
+            return True
+        else:
+            logger.error(f"API error: {resp.text}")
+            return False
     except Exception as e:
-        logger.error(f"DB save error: {e}")
+        logger.error(f"API submit error: {e}")
         return False
 
 def send_discord_notification(card: Dict) -> bool:
@@ -178,12 +171,6 @@ Press Ctrl+C to stop.
         card = fetch_random_card()
         if not card:
             time.sleep(10)
-            continue
-
-        # Skip if already analyzed
-        if cards.find_one({'uuid': card['id'], 'analysis.long_form': {'$exists': True}}):
-            logger.info(f"{card['name']} already analyzed, skipping.")
-            time.sleep(2)
             continue
 
         # First pass: generate raw analysis

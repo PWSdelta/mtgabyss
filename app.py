@@ -47,7 +47,7 @@ def card_detail(uuid):
 def gallery():
     """Scrolling gallery page"""
     # Example: show only rare cards with normal images
-    rare_cards = cards.find({'rarity': 'rare', 'imageUris.normal': {'$exists': True}}).limit(60)
+    rare_cards = cards.find({'rarity': 'rare', 'imageUris.art_crop': {'$exists': True}}).limit(60)
     return render_template('gallery.html', cards=rare_cards)
 
 @app.route('/random')
@@ -58,15 +58,25 @@ def random_card_redirect():
 # Worker API endpoints
 @app.route('/api/submit_work', methods=['POST'])
 def submit_work():
-    """Accepts completed analysis from workers"""
     data = request.json
     if not data or 'uuid' not in data or 'analysis' not in data:
         return jsonify({'status': 'error', 'message': 'Missing required fields'}), 400
-        
+
+    update_fields = {}
+    # Flatten card_data fields to top level
+    if 'card_data' in data:
+        for k, v in data['card_data'].items():
+            if k != 'id':
+                update_fields[k] = v
+    # Always save uuid and analysis at top  level
+    update_fields['uuid'] = data['uuid']
+    update_fields['analysis'] = data['analysis']
+
     try:
         cards.update_one(
             {'uuid': data['uuid']},
-            {'$set': {'analysis': data['analysis']}}
+            {'$set': update_fields},
+            upsert=True
         )
         logger.info(f"Saved analysis for card {data['uuid']}")
         return jsonify({'status': 'ok'})
