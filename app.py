@@ -7,7 +7,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017'))
-db = client.mtg
+db = client.mtgabyss
 cards = db.cards
 
 # Configure logging
@@ -59,6 +59,8 @@ def random_card_redirect():
 @app.route('/api/submit_work', methods=['POST'])
 def submit_work():
     data = request.json
+    logger.info(f"Received data: {data}")
+
     if not data or 'uuid' not in data or 'analysis' not in data:
         return jsonify({'status': 'error', 'message': 'Missing required fields'}), 400
 

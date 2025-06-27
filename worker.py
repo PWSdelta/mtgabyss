@@ -41,6 +41,7 @@ def fetch_random_card() -> Optional[Dict]:
         resp.raise_for_status()
         card = resp.json()
         logger.info(f"Fetched card: {card['name']} ({card['id']})")
+        card['imageUris'] = card.get('image_uris', {})
         return card
     except Exception as e:
         logger.error(f"Error fetching card: {e}")
@@ -109,10 +110,15 @@ def save_to_database(card: dict, analysis: str) -> bool:
     try:
         payload = {
             "uuid": card["id"],
-            "analysis": analysis,
+            "analysis": {
+                "long_form": analysis,
+                "analyzed_at": datetime.now().isoformat(),
+                "model_used": LLM_MODEL
+            },
             "card_data": card  # send the full card dict!
         }
         api_url = f"{MTGABYSS_BASE_URL}/api/submit_work"
+        card['imageUris'] = card.get('image_uris', {})
         resp = requests.post(api_url, json=payload, timeout=30)
         resp.raise_for_status()
         if resp.json().get("status") == "ok":
