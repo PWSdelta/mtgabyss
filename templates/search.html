@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}Search Cards - MTG Analysis{% endblock %}
+
+{% block content %}
+<!-- Hero Section -->
+<div class="py-5 mb-4 bg-light rounded-3 shadow-sm">
+    <div class="container text-center">
+        <h1 class="display-4 mb-3">MTGAbyss</h1>
+        <p class="lead mb-4">Search for any Magic: The Gathering card and get a deep-dive analysis powered by AI.</p>
+        <form method="GET" action="/" class="row justify-content-center g-2">
+            <div class="col-12 col-md-6">
+                <input type="search" name="q" class="form-control form-control-lg" placeholder="Search cards..." value="{{ query }}">
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-primary btn-lg px-4">Search</button>
+            </div>
+            <div class="col-auto">
+                <a href="/random" class="btn btn-outline-secondary btn-lg px-4" id="random-card-btn">Random Card</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+
+<!-- Results Grid -->
+<div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+    {% for card in cards %}
+    <div class="col">
+        <div class="card h-100">
+            {% if card.get('imageUris', {}).get('normal') %}
+            <a href="/card/{{ card['uuid'] }}">
+                <img src="{{ card['imageUris']['normal'] }}" class="card-img-top" alt="{{ card['name'] }}">
+            </a>
+            {% endif %}
+            <div class="card-body">
+                <h5 class="card-title">{{ card['name'] }}</h5>
+                {% if card.get('analysis') %}
+                <span class="badge bg-success">Analyzed</span>
+                {% else %}
+                <span class="badge bg-secondary">Pending Analysis</span>
+                {% endif %}
+                <p class="card-text">{{ card.get('type_line', '') }}</p>
+                <a href="/card/{{ card['uuid'] }}" class="btn btn-primary">View Details</a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Closing Hero Section -->
+<div class="py-5 mt-5 bg-light rounded-3 shadow-sm">
+    <div class="container text-center">
+        <h2 class="display-6 mb-3">Discover More Magic</h2>
+        <p class="lead mb-4">
+            MTGAbyss is your portal to deep, AI-powered Magic: The Gathering card analysis.<br>
+            Search, explore, and get inspired for your next deck or brew!
+        </p>
+        <form method="GET" action="/" class="row justify-content-center g-2 mb-3">
+            <div class="col-12 col-md-6">
+                <input type="search" name="q" class="form-control form-control-lg" placeholder="Search another card...">
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-primary btn-lg px-4">Search</button>
+            </div>
+            <div class="col-auto">
+                <a href="/random" class="btn btn-outline-secondary btn-lg px-4">Random Card</a>
+            </div>
+        </form>
+        <div>
+            <small class="text-muted">All card data &copy; Scryfall. Not affiliated with Wizards of the Coast.</small>
+        </div>
+    </div>
+</div>
+
+
+<script>
+    // Optional: Fetch a random card UUID for the Random Card button
+    document.getElementById('random-card-btn').addEventListener('click', function(e) {
+        if (!this.getAttribute('href').replace('/card/', '')) {
+            e.preventDefault();
+            fetch('/api/random-card-uuid')
+                .then(resp => resp.json())
+                .then(data => {
+                    if (data.uuid) window.location.href = '/card/' + data.uuid;
+                });
+        }
+    });
+</script>
+{% endblock %}

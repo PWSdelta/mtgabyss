@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>MTG Art Gallery</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flickity@3/dist/flickity.min.css">
+  <style>
+    body { background: #111; }
+    .carousel {
+      background: #181818;
+      max-width: 1024px;
+      margin: 60px auto;
+      border-radius: 1.2rem;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+      overflow: hidden;
+    }
+    .carousel-cell {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: flex-start;
+      min-height: 100%;
+    }
+    .carousel-cell img {
+      display: block;
+      width: 100%;
+      border-radius: 1.2rem 1.2rem 0 0;
+      background: #222;
+    }
+    .caption {
+      background: rgba(0,0,0,0.72);
+      color: #fff;
+      padding: 0.9rem 1.2rem 1.1rem 1.2rem;
+      font-size: 1.1rem;
+      border-radius: 0 0 1.2rem 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 56px;
+    }
+    .caption .card-type {
+      font-size: 0.95rem;
+      color: #bbb;
+      margin-left: 1.2rem;
+    }
+    .caption a {
+      color: #ffd700;
+      text-decoration: underline;
+      font-weight: 500;
+      margin-left: 1.5rem;
+      white-space: nowrap;
+    }
+    /* Fade prev/next buttons except on hover */
+    .flickity-prev-next-button {
+      opacity: 0.2;
+      transition: opacity 1.5s;
+    }
+    .carousel:hover .flickity-prev-next-button {
+      opacity: .5;
+    }
+    .flickity-button {
+      background: rgba(30,30,30,0.7);
+      color: #fff;
+      border-radius: 50%;
+      width: 56px;
+      height: 56px;
+      font-size: 2rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      transition: background 0.5s, opacity 0.5s;
+    }
+    .flickity-button:hover {
+      background: #222;
+      color: #ffd700;
+    }
+    .flickity-page-dots .dot {
+      background: #ffd700;
+      opacity: 0.5;
+    }
+    .flickity-page-dots .dot.is-selected {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="carousel"
+    data-flickity='{
+      "wrapAround": true,
+      "autoPlay": 3000,
+      "pauseAutoPlayOnHover": false,
+      "prevNextButtons": true,
+      "pageDots": true,
+      "fade": true
+    }'>
+    {% for card in cards %}
+      {% if card.get('imageUris', {}).get('art_crop') %}
+      <div class="carousel-cell">
+        <img src="{{ card['imageUris']['art_crop'] }}" alt="MTG Art">
+        <div class="caption">
+          <span>
+            <strong>{{ card['name'] }}</strong>
+            {% if card.get('type_line') %}
+              <span class="card-type">{{ card['type_line'] }}</span>
+            {% endif %}
+          </span>
+          <a href="/card/{{ card['uuid'] }}">View Card &rarr;</a>
+        </div>
+      </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/flickity@3/dist/flickity.pkgd.min.js"></script>
+  <script src="https://unpkg.com/flickity-fade@2/flickity-fade.js"></script>
+</body>
+</html>

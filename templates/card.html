@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <!-- Card Image and Details Column -->
+        <div class="col-md-4">
+            <div class="card mb-4 shadow-sm">
+                <div class="bg-light text-center p-2">
+                    <img 
+                        src="{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png') }}" 
+                        class="img-fluid rounded" 
+                        alt="{{ card.name }}"
+                        style="max-height: 340px; object-fit: contain;"
+                    >
+                </div>
+                <div class="card-body">
+                    <h4 class="card-title mb-2">{{ card.name }}</h4>
+                    <div class="mb-2">
+                        <span class="badge bg-secondary me-1">{{ card.set_name or "Unknown Set" }}</span>
+                        <span class="badge bg-info text-dark">{{ card.rarity|capitalize }}</span>
+                    </div>
+                    <div class="mb-2">
+                        <strong>Mana Cost:</strong>
+                        <span class="ms-1">{{ card.mana_cost or "—" }}</span>
+                    </div>
+                    <div class="mb-2">
+                        <strong>Type:</strong>
+                        <span class="ms-1">{{ card.type_line or "—" }}</span>
+                    </div>
+                    {% if card.power or card.toughness %}
+                    <div class="mb-2">
+                        <strong>P/T:</strong>
+                        <span class="ms-1">{{ card.power or "?" }}/{{ card.toughness or "?" }}</span>
+                    </div>
+                    {% endif %}
+                    {% if card.oracle_text %}
+                    <div class="mb-2">
+                        <strong>Oracle Text:</strong>
+                        <div class="small text-muted" style="white-space: pre-line;">{{ card.oracle_text }}</div>
+                    </div>
+                    {% endif %}
+                    {% if card.flavor_text %}
+                    <div class="mb-2">
+                        <strong>Flavor:</strong>
+                        <div class="fst-italic small text-secondary" style="white-space: pre-line;">{{ card.flavor_text }}</div>
+                    </div>
+                    {% endif %}
+                    {% if card.artist %}
+                    <div class="mb-2">
+                        <strong>Artist:</strong>
+                        <span class="ms-1">{{ card.artist }}</span>
+                    </div>
+                    {% endif %}
+                    {% if card.imageUris and card.imageUris.art_crop %}
+                    <div class="mb-2">
+                        <img src="{{ card.imageUris.art_crop }}" alt="Art crop" class="img-fluid rounded" style="max-height: 80px;">
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Analysis Column -->
+        <div class="col-md-8">
+            {% if card.analysis %}
+                <div class="card shadow-sm mb-4">
+                    <div class="card-header bg-primary text-white">
+                        <h4 class="mb-0">Full Analysis</h4>
+                        {% if card.analysis.analyzed_at %}
+                            <small class="text-light">Generated on {{ card.analysis.analyzed_at }}</small>
+                        {% endif %}
+                    </div>
+                    <div class="card-body markdown-content">
+                        {{ card.analysis.long_form | markdown | safe }}
+                    </div>
+                </div>
+            {% else %}
+                <div class="alert alert-info">
+                    Analysis not yet available for this card.
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
