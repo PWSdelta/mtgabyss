@@ -3,6 +3,9 @@
 {% block title %}{{ card.name }} MTG Card Strategy{% endblock %}
 
 {% block content %}
+<script>
+  window.CURRENT_CARD_UUID = "{{ card.uuid }}";
+</script>
 <div class="container mt-4">
     <div class="row">
         <!-- Card Image and Details Column -->

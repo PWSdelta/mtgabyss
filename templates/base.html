@@ -81,7 +81,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-    // Linkify card names in .markdown-content blocks using ALL_CARDS
+    // Linkify card names in .markdown-content blocks using ALL_CARDS, but skip the current card
     document.addEventListener('DOMContentLoaded', function() {
       if (!window.ALL_CARDS) return;
       const nameToUuid = {};
@@ -91,8 +91,10 @@
       document.querySelectorAll('.markdown-content').forEach(block => {
         let html = block.innerHTML;
         cardNames.forEach(name => {
+          // Skip the current card being reviewed
+          if (window.CURRENT_CARD_UUID && nameToUuid[name] === window.CURRENT_CARD_UUID) return;
           // Use word boundaries, ignore inside existing <a> tags
-          const regex = new RegExp(`(?<![>\w])(${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![\w<])`, 'g');
+          const regex = new RegExp(`(?<![>\\w])(${name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')})(?![\\w<])`, 'g');
           html = html.replace(regex, `<a href="/card/${nameToUuid[name]}">$1</a>`);
         });
         block.innerHTML = html;
