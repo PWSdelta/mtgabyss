@@ -84,19 +84,31 @@
     document.addEventListener('DOMContentLoaded', function() {
       if (!window.ALL_CARDS) return;
       const nameToUuid = {};
-      window.ALL_CARDS.forEach(card => { nameToUuid[card.name.trim().toLowerCase()] = String(card.uuid).trim(); });
+      const allCardData = {};
+      window.ALL_CARDS.forEach(card => {
+        const key = card.name.trim().toLowerCase();
+        nameToUuid[key] = String(card.uuid).trim();
+        allCardData[key] = card;
+      });
       const currentName = (window.CURRENT_CARD_NAME || '').trim().toLowerCase();
       const cardNames = Object.keys(nameToUuid).sort((a, b) => b.length - a.length);
       document.querySelectorAll('.markdown-content').forEach(block => {
         let html = block.innerHTML;
         cardNames.forEach(name => {
-          // Skip the current card being reviewed (by name, case-insensitive)
           if (currentName && name === currentName) return;
-          // Use word boundaries, ignore inside existing <a> tags, case-insensitive
           const regex = new RegExp(`(?<![>\\w])(${name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')})(?![\\w<])`, 'gi');
-          html = html.replace(regex, `<a href="/card/${nameToUuid[name]}">$1</a>`);
+          const oracle = (allCardData[name] && allCardData[name].oracle_text) ? allCardData[name].oracle_text.replace(/"/g, '&quot;') : 'No card text available.';
+          html = html.replace(
+            regex,
+            `<a href="/card/${nameToUuid[name]}" tabindex="0" role="button" data-bs-toggle="popover" data-bs-trigger="hover focus" data-bs-placement="top" data-bs-content="${oracle}">$1</a>`
+          );
         });
         block.innerHTML = html;
+      });
+      // Initialize Bootstrap popovers
+      var popoverTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="popover"]'));
+      popoverTriggerList.forEach(function (popoverTriggerEl) {
+        new bootstrap.Popover(popoverTriggerEl);
       });
     });
     </script>
