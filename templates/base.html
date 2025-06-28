@@ -82,21 +82,30 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-    if (!window.ALL_CARDS) return;
-    const nameToUuid = {};
-    window.ALL_CARDS.forEach(card => { nameToUuid[card.name] = String(card.uuid).trim(); });
-    const currentUuid = (window.CURRENT_CARD_UUID || '').trim();
-    const cardNames = Object.keys(nameToUuid).sort((a, b) => b.length - a.length);
-    document.querySelectorAll('.markdown-content').forEach(block => {
+      if (!window.ALL_CARDS) return;
+      const nameToUuid = {};
+      window.ALL_CARDS.forEach(card => { nameToUuid[card.name.trim().toLowerCase()] = String(card.uuid).trim(); });
+      const currentUuid = (window.CURRENT_CARD_UUID || '').trim();
+      let currentName = '';
+      // Find the current card's name by uuid
+      for (const [name, uuid] of Object.entries(nameToUuid)) {
+        if (uuid === currentUuid) {
+          currentName = name;
+          break;
+        }
+      }
+      const cardNames = Object.keys(nameToUuid).sort((a, b) => b.length - a.length);
+      document.querySelectorAll('.markdown-content').forEach(block => {
         let html = block.innerHTML;
         cardNames.forEach(name => {
-        // Skip the current card being reviewed
-        if (currentUuid && nameToUuid[name] === currentUuid) return;
-        const regex = new RegExp(`(?<![>\\w])(${name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')})(?![\\w<])`, 'g');
-        html = html.replace(regex, `<a href="/card/${nameToUuid[name]}">$1</a>`);
+          // Skip the current card being reviewed (by name, case-insensitive)
+          if (currentName && name === currentName) return;
+          // Use word boundaries, ignore inside existing <a> tags, case-insensitive
+          const regex = new RegExp(`(?<![>\\w])(${name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')})(?![\\w<])`, 'gi');
+          html = html.replace(regex, `<a href="/card/${nameToUuid[name.toLowerCase()]}">$1</a>`);
         });
         block.innerHTML = html;
-    });
+      });
     });
     </script>
 </body>
