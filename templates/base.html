@@ -97,10 +97,12 @@
         cardNames.forEach(name => {
           if (currentName && name === currentName) return;
           const regex = new RegExp(`(?<![>\\w])(${name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')})(?![\\w<])`, 'gi');
-          const oracle = (allCardData[name] && allCardData[name].oracle_text) ? allCardData[name].oracle_text.replace(/"/g, '&quot;') : 'No card text available.';
+          const imageUrl = (allCardData[name] && allCardData[name].imageUris && allCardData[name].imageUris.normal)
+            ? allCardData[name].imageUris.normal
+            : '/static/img/cardback.png';
           html = html.replace(
             regex,
-            `<a href="/card/${nameToUuid[name]}" tabindex="0" role="button" data-bs-toggle="popover" data-bs-trigger="hover focus" data-bs-placement="top" data-bs-content="${oracle}">$1</a>`
+            `<a href="/card/${nameToUuid[name]}" tabindex="0" role="button" data-bs-toggle="popover" data-bs-trigger="hover focus" data-bs-placement="top" data-bs-html="true" data-bs-content="<img src='${imageUrl}' style='max-width:220px;max-height:320px;'/>">$1</a>`
           );
         });
         block.innerHTML = html;
