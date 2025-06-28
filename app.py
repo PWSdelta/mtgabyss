@@ -3,7 +3,9 @@ from pymongo import MongoClient
 import os
 import logging
 import markdown
+import re
 from datetime import datetime
+from time import time
 
 app = Flask(__name__)
 client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017'))
@@ -26,6 +28,31 @@ def markdown_filter(text):
         return ''
     return md.convert(text)
 
+@app.template_filter('link_card_mentions')
+def link_card_mentions(text):
+    if not text:
+        return ''
+    # Find all [[Card Name]]
+    def replacer(match):
+        card_name = match.group(1)
+        # Try to find the card by name (case-insensitive)
+        card = cards.find_one({'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, {'uuid': 1})
+        if card and 'uuid' in card:
+            url = url_for('card_detail', uuid=card['uuid'])
+            return f'<a href="{url}">{card_name}</a>'
+        else:
+            # Fallback: link to search page with card name
+            url = url_for('search', q=card_name)
+            return f'<a href="{url}">{card_name}</a>'
+    # Replace all [[Card Name]] with links
+    return re.sub(r'\[\[(.+?)\]\]', replacer, text)
+
+# Simple in-memory cache for randomized homepage results
+_frontpage_cache = {
+    'results': [],
+    'timestamp': 0
+}
+
 # Web routes
 @app.route('/')
 def search():
@@ -34,7 +61,18 @@ def search():
     if query:
         results = cards.find({'name': {'$regex': query, '$options': 'i'}})
     else:
-        results = cards.find().sort("analysis.analyzed_at", -1).limit(100)
+        now = time()
+        # 1 hour = 3600 seconds
+        if not _frontpage_cache['results'] or now - _frontpage_cache['timestamp'] > 3600:
+            # Get 100 random cards with analysis
+            results = list(cards.aggregate([
+                {'$match': {'analysis': {'$exists': True}}},
+                {'$sample': {'size': 100}}
+            ]))
+            _frontpage_cache['results'] = results
+            _frontpage_cache['timestamp'] = now
+        else:
+            results = _frontpage_cache['results']
     return render_template('search.html', cards=results, query=query)
 
 @app.route('/card/<uuid>')
