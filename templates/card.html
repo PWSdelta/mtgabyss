@@ -5,6 +5,7 @@
 {% block content %}
 <script>
   window.CURRENT_CARD_UUID = "{{ card.uuid }}";
+  window.CURRENT_CARD_NAME = "{{ card.name|e }}";
 </script>
 <div class="container mt-4">
     <div class="row">

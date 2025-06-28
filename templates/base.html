@@ -85,15 +85,7 @@
       if (!window.ALL_CARDS) return;
       const nameToUuid = {};
       window.ALL_CARDS.forEach(card => { nameToUuid[card.name.trim().toLowerCase()] = String(card.uuid).trim(); });
-      const currentUuid = (window.CURRENT_CARD_UUID || '').trim();
-      let currentName = '';
-      // Find the current card's name by uuid
-      for (const [name, uuid] of Object.entries(nameToUuid)) {
-        if (uuid === currentUuid) {
-          currentName = name;
-          break;
-        }
-      }
+      const currentName = (window.CURRENT_CARD_NAME || '').trim().toLowerCase();
       const cardNames = Object.keys(nameToUuid).sort((a, b) => b.length - a.length);
       document.querySelectorAll('.markdown-content').forEach(block => {
         let html = block.innerHTML;
@@ -102,7 +94,7 @@
           if (currentName && name === currentName) return;
           // Use word boundaries, ignore inside existing <a> tags, case-insensitive
           const regex = new RegExp(`(?<![>\\w])(${name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')})(?![\\w<])`, 'gi');
-          html = html.replace(regex, `<a href="/card/${nameToUuid[name.toLowerCase()]}">$1</a>`);
+          html = html.replace(regex, `<a href="/card/${nameToUuid[name]}">$1</a>`);
         });
         block.innerHTML = html;
       });
