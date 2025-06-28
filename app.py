@@ -59,7 +59,7 @@ def search():
     """Card search page"""
     query = request.args.get('q', '')
     if query:
-        results = cards.find({'name': {'$regex': query, '$options': 'i'}})
+        results = list(cards.find({'name': {'$regex': query, '$options': 'i'}}))
     else:
         now = time()
         # 1 hour = 3600 seconds
