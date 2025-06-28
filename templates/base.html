@@ -102,7 +102,7 @@
             : '/static/img/cardback.png';
           html = html.replace(
             regex,
-            `<a href="/card/${nameToUuid[name]}" tabindex="0" role="button" data-bs-toggle="popover" data-bs-trigger="hover focus" data-bs-placement="top" data-bs-html="true" data-bs-content="<img src='${imageUrl}' style='max-width:220px;max-height:320px;'/>">$1</a>`
+            `<a href="/card/${nameToUuid[name]}" tabindex="0" role="button" data-bs-toggle="popover" data-bs-trigger="hover focus" data-bs-placement="top" data-bs-html="true" data-bs-content="<img src='${imageUrl}' style='max-width:110px;max-height:160px;'/>">$1</a>`
           );
         });
         block.innerHTML = html;
