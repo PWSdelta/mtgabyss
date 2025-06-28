@@ -47,6 +47,11 @@
             color: #6c757d;
         }
     </style>
+    {% if all_cards %}
+    <script>
+      window.ALL_CARDS = {{ all_cards|tojson }};
+    </script>
+    {% endif %}
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
@@ -75,5 +80,24 @@
     </footer>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // Linkify card names in .markdown-content blocks using ALL_CARDS
+    document.addEventListener('DOMContentLoaded', function() {
+      if (!window.ALL_CARDS) return;
+      const nameToUuid = {};
+      window.ALL_CARDS.forEach(card => { nameToUuid[card.name] = card.uuid; });
+      // Sort names by length descending to avoid partial matches
+      const cardNames = Object.keys(nameToUuid).sort((a, b) => b.length - a.length);
+      document.querySelectorAll('.markdown-content').forEach(block => {
+        let html = block.innerHTML;
+        cardNames.forEach(name => {
+          // Use word boundaries, ignore inside existing <a> tags
+          const regex = new RegExp(`(?<![>\w])(${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![\w<])`, 'g');
+          html = html.replace(regex, `<a href="/card/${nameToUuid[name]}">$1</a>`);
+        });
+        block.innerHTML = html;
+      });
+    });
+    </script>
 </body>
 </html>
