@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Config ---
-LLM_MODEL = os.getenv('LLM_MODEL', 'llama3.1:latest')
+LLM_MODEL = os.getenv('LLM_MODEL', 'llama3.2:3b')
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 MTGABYSS_BASE_URL = os.getenv('MTGABYSS_BASE_URL', 'http://localhost:5000')
@@ -90,11 +90,14 @@ def generate_analysis(card: Dict) -> Optional[str]:
     prompt = create_analysis_prompt(card)
     try:
         logger.info(f"Generating analysis for {card['name']} using {LLM_MODEL}")
+        start_time = time.time()
         response = ollama.generate(
             model=LLM_MODEL,
             prompt=prompt,
             options={'timeout': 300}
         )
+        elapsed = time.time() - start_time
+        logger.info(f"Analysis generation took {elapsed:.2f} seconds for {card['name']}")
         text = response.get('response', '')
         if len(text) < 1000:
             logger.warning(f"Analysis too short for {card['name']}")
@@ -190,11 +193,14 @@ Press Ctrl+C to stop.
         polish_prompt = create_polish_prompt(card, raw_analysis)
         try:
             logger.info(f"Polishing analysis for {card['name']} using {LLM_MODEL}")
+            start_time = time.time()
             response = ollama.generate(
                 model=LLM_MODEL,
                 prompt=polish_prompt,
                 options={'timeout': 300}
             )
+            elapsed = time.time() - start_time
+            logger.info(f"Polishing took {elapsed:.2f} seconds for {card['name']}")
             polished_analysis = response.get('response', '')
             if len(polished_analysis) < 1000:
                 logger.warning(f"Polished analysis too short for {card['name']}")
@@ -203,6 +209,12 @@ Press Ctrl+C to stop.
         except Exception as e:
             logger.error(f"LLM error during polish: {e}")
             continue
+
+        # Add a newline between each card analysis for clarity
+        print("\n" + "="*80 + "\n")
+        print(f"Analysis for card: {card['name']}")
+        print(polished_analysis)
+        print("\n" + "="*80 + "\n")
 
         if save_to_database(card, polished_analysis):
             send_discord_notification(card)
