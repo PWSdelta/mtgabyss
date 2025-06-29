@@ -165,7 +165,7 @@ def send_discord_notification(card: Dict) -> bool:
 
 def main():
     print(f"""
-🃏 MTG Card Analysis Worker (Serial)
+MTG Card Analysis Worker (Serial)
 ===================================
 Model: {LLM_MODEL}
 Database: {MONGODB_URI}
