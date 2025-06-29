@@ -7,7 +7,6 @@ saves to MongoDB, and posts to Discord.
 
 import os
 import time
-import logging
 import requests
 from datetime import datetime
 from typing import Dict, Optional
@@ -17,20 +16,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Config ---
-LLM_MODEL = os.getenv('LLM_MODEL', 'llama3.1:latest')
+LLM_MODEL = 'llama3.2:3b'
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 MTGABYSS_BASE_URL = os.getenv('MTGABYSS_BASE_URL', 'http://localhost:5000')
 SCRYFALL_API_BASE = 'https://api.scryfall.com'
 
 # --- Logging ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - MTG_WORKER - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - MTG_WORKER - %(levelname)s - %(message)s'
+# )
+# logger = logging.getLogger(__name__)
 
-# # --- MongoDB ---
+def simple_log(msg):
+    print(msg)
+
+# # --- MongoDB ---~
 # client = MongoClient(MONGODB_URI)
 # db = client.mtg
 # cards = db.cards
@@ -40,11 +42,11 @@ def fetch_random_card() -> Optional[Dict]:
         resp = requests.get(f'{SCRYFALL_API_BASE}/cards/random', timeout=10)
         resp.raise_for_status()
         card = resp.json()
-        logger.info(f"Fetched card: {card['name']} ({card['id']})")
+        simple_log(f"Fetched card: {card['name']} ({card['id']})")
         card['imageUris'] = card.get('image_uris', {})
         return card
     except Exception as e:
-        logger.error(f"Error fetching card: {e}")
+        simple_log(f"Error fetching card: {e}")
         return None
 
 def create_analysis_prompt(card: Dict) -> str:
@@ -60,7 +62,7 @@ Include:
 - Art, flavor, and historical context
 - Summary of key points (use a different section title for this)
 
-Use natural paragraphs, markdown headers, and liberal use of specific card examples in [[double brackets]]. Do not use bullet points. Write at least 2000 words. Do not mention yourself or the analysis process.
+Use natural paragraphs, markdown headers, and liberal use of specific card examples in [[double brackets]]. Do not use bullet points. Write at least 3357 words. Do not mention yourself or the analysis process.
 Wrap up with a conclusion summary
 
 Card details:
@@ -82,14 +84,14 @@ Original review:
 Moderate use of specific card examples in [[double brackets]].
 Do not use [[double brackets]] for any mention of {card['name']}.
 Limit use bullet points.
-Write at least 2357 words.
+Write at least 3357 words.
 Do not mention yourself or the analysis process.
 """
 
 def generate_analysis(card: Dict) -> Optional[str]:
     prompt = create_analysis_prompt(card)
     try:
-        logger.info(f"Generating analysis for {card['name']} using {LLM_MODEL}")
+        simple_log(f"Generating analysis for {card['name']} using {LLM_MODEL}")
         response = ollama.generate(
             model=LLM_MODEL,
             prompt=prompt,
@@ -97,16 +99,15 @@ def generate_analysis(card: Dict) -> Optional[str]:
         )
         text = response.get('response', '')
         if len(text) < 1000:
-            logger.warning(f"Analysis too short for {card['name']}")
+            simple_log(f"Analysis too short for {card['name']}")
             return None
-        logger.info(f"Analysis generated ({len(text)} chars)")
+        simple_log(f"Analysis generated ({len(text)} chars)")
         return text
     except Exception as e:
-        logger.error(f"LLM error: {e}")
+        simple_log(f"LLM error: {e}")
         return None
 
 def save_to_database(card: dict, analysis: str) -> bool:
-    """Send analysis to Flask API endpoint instead of writing directly to MongoDB."""
     try:
         payload = {
             "uuid": card["id"],
@@ -115,25 +116,25 @@ def save_to_database(card: dict, analysis: str) -> bool:
                 "analyzed_at": datetime.now().isoformat(),
                 "model_used": LLM_MODEL
             },
-            "card_data": card  # send the full card dict!
+            "card_data": card
         }
         api_url = f"{MTGABYSS_BASE_URL}/api/submit_work"
         card['imageUris'] = card.get('image_uris', {})
         resp = requests.post(api_url, json=payload, timeout=30)
         resp.raise_for_status()
         if resp.json().get("status") == "ok":
-            logger.info(f"Submitted analysis for {card['name']} to API")
+            simple_log(f"Submitted analysis for {card['name']} to API")
             return True
         else:
-            logger.error(f"API error: {resp.text}")
+            simple_log(f"API error: {resp.text}")
             return False
     except Exception as e:
-        logger.error(f"API submit error: {e}")
+        simple_log(f"API submit error: {e}")
         return False
 
 def send_discord_notification(card: Dict) -> bool:
     if not DISCORD_WEBHOOK_URL:
-        logger.warning("No Discord webhook URL configured")
+        simple_log("No Discord webhook URL configured")
         return False
     try:
         card_name = card['name']
@@ -156,10 +157,10 @@ def send_discord_notification(card: Dict) -> bool:
         payload = {"embeds": [embed]}
         resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         resp.raise_for_status()
-        logger.info(f"Sent Discord notification for {card_name}")
+        simple_log(f"Sent Discord notification for {card_name}")
         return True
     except Exception as e:
-        logger.error(f"Discord notification error: {e}")
+        simple_log(f"Discord notification error: {e}")
         return False
 
 def main():
@@ -174,6 +175,7 @@ MTGAbyss URL: {MTGABYSS_BASE_URL}
 Press Ctrl+C to stop.
 """)
     while True:
+        round_start = time.time()
         card = fetch_random_card()
         if not card:
             time.sleep(10)
@@ -182,14 +184,14 @@ Press Ctrl+C to stop.
         # First pass: generate raw analysis
         raw_analysis = generate_analysis(card)
         if not raw_analysis:
-            logger.error(f"Failed to generate analysis for {card['name']}")
+            simple_log(f"Failed to generate analysis for {card['name']}")
             time.sleep(5)
             continue
 
         # Second pass: polish the analysis
         polish_prompt = create_polish_prompt(card, raw_analysis)
         try:
-            logger.info(f"Polishing analysis for {card['name']} using {LLM_MODEL}")
+            simple_log(f"Polishing analysis for {card['name']} using {LLM_MODEL}")
             response = ollama.generate(
                 model=LLM_MODEL,
                 prompt=polish_prompt,
@@ -197,15 +199,17 @@ Press Ctrl+C to stop.
             )
             polished_analysis = response.get('response', '')
             if len(polished_analysis) < 1000:
-                logger.warning(f"Polished analysis too short for {card['name']}")
+                simple_log(f"Polished analysis too short for {card['name']}")
                 continue
-            logger.info(f"Polished analysis generated ({len(polished_analysis)} chars)")
+            simple_log(f"Polished analysis generated ({len(polished_analysis)} chars)")
         except Exception as e:
-            logger.error(f"LLM error during polish: {e}")
+            simple_log(f"LLM error during polish: {e}")
             continue
 
         if save_to_database(card, polished_analysis):
             send_discord_notification(card)
+            elapsed = time.time() - round_start
+            simple_log(f"[SimpleLog] Finished {card['name']} in {elapsed:.2f} seconds.")
 
 if __name__ == "__main__":
     main()
