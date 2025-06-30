@@ -78,7 +78,7 @@
                         {% endif %}
                     </div>
                     <div class="card-body markdown-content">
-                        {{ card.analysis.long_form | link_card_mentions | markdown | safe }}
+                        {{ card.analysis.long_form | link_card_mentions(current_card_name) | markdown | safe }}
                     </div>
                 </div>
             {% else %}

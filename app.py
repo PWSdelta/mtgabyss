@@ -29,12 +29,15 @@ def markdown_filter(text):
     return md.convert(text)
 
 @app.template_filter('link_card_mentions')
-def link_card_mentions(text):
+def link_card_mentions(text, current_card_name=None):
     if not text:
         return ''
     # Find all [[Card Name]]
     def replacer(match):
         card_name = match.group(1)
+        # If this is the current card, just return the name (no brackets, no link)
+        if current_card_name and card_name.strip().lower() == current_card_name.strip().lower():
+            return card_name
         # Try to find the card by name (case-insensitive)
         card = cards.find_one({'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, {'uuid': 1})
         if card and 'uuid' in card:
@@ -44,7 +47,7 @@ def link_card_mentions(text):
             # Fallback: link to search page with card name
             url = url_for('search', q=card_name)
             return f'<a href="{url}">{card_name}</a>'
-    # Replace all [[Card Name]] with links
+    # Replace all [[Card Name]] with links, except for the current card
     return re.sub(r'\[\[(.+?)\]\]', replacer, text)
 
 # Simple in-memory cache for randomized homepage results
@@ -80,7 +83,8 @@ def card_detail(uuid):
     """Card detail page"""
     card = cards.find_one({'uuid': uuid})
     all_cards = list(cards.find({}, {'name': 1, 'uuid': 1, 'imageUris.normal': 1, '_id': 0}))
-    return render_template('card.html', card=card, all_cards=all_cards)
+    # Pass current card name to template for filter use
+    return render_template('card.html', card=card, all_cards=all_cards, current_card_name=card['name'] if card else None)
 
 @app.route('/gallery')
 def gallery():

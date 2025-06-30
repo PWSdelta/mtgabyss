@@ -8,6 +8,7 @@ saves to MongoDB, and posts to Discord.
 import os
 import time
 import requests
+import logging
 from datetime import datetime
 from typing import Dict, Optional
 import ollama
