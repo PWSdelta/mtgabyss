@@ -118,9 +118,14 @@ def search():
                 {'$sample': {'size': 60}}
             ]))
             # Sort in Python since $sample is used
+            import math
             def price_usd(card):
+                val = card.get('prices', {}).get('usd')
                 try:
-                    return float(card.get('prices', {}).get('usd') or 0)
+                    fval = float(val)
+                    if math.isnan(fval) or math.isinf(fval):
+                        return 0
+                    return fval
                 except Exception:
                     return 0
             results = sorted(results, key=price_usd, reverse=True)[:30]
