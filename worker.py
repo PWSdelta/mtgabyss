@@ -109,6 +109,8 @@ def generate_analysis(card: Dict) -> Optional[str]:
 
 def save_to_database(card: dict, analysis: str) -> bool:
     try:
+        # Set category for the card (default to 'mtg' for Scryfall)
+        card_category = 'mtg'  # If you add other games, update this logic
         payload = {
             "uuid": card["id"],
             "analysis": {
@@ -116,6 +118,7 @@ def save_to_database(card: dict, analysis: str) -> bool:
                 "analyzed_at": datetime.now().isoformat(),
                 "model_used": LLM_MODEL
             },
+            "category": card_category,
             "card_data": card
         }
         api_url = f"{MTGABYSS_BASE_URL}/api/submit_work"

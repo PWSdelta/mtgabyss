@@ -79,6 +79,9 @@ def search():
 def card_detail(uuid):
     """Card detail page"""
     card = cards.find_one({'uuid': uuid})
+    # Ensure category is present (default to 'mtg' if missing)
+    if card and 'category' not in card:
+        card['category'] = 'mtg'
     all_cards = list(cards.find({}, {'name': 1, 'uuid': 1, 'imageUris.normal': 1, '_id': 0}))
     return render_template('card.html', card=card, all_cards=all_cards)
 

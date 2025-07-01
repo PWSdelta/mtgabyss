@@ -81,6 +81,27 @@
                         {{ card.analysis.long_form | link_card_mentions | markdown | safe }}
                     </div>
                 </div>
+                <!-- Per-category widgets/charts -->
+                {% if card.category == 'mtg' %}
+                  <!-- Scryfall price chart for MTG only -->
+                  <div class="mb-3">
+                    <h5>Scryfall Price Chart</h5>
+                    <iframe src="https://www.scryfall.com/card/{{ card.set or 'unknown' }}/{{ card.collector_number or '0' }}/prices/embed" width="100%" height="200" frameborder="0" style="background:#fff;"></iframe>
+                  </div>
+                {% elif card.category == 'yugioh' %}
+                  <!-- eBay widget for Yu-Gi-Oh only -->
+                  <div class="mb-3">
+                    <h5>eBay Listings</h5>
+                    <iframe src="https://www.ebay.com/sch/i.html?_nkw={{ card.name|urlencode }}+yugioh+card" width="100%" height="300" frameborder="0" style="background:#fff;"></iframe>
+                  </div>
+                {% endif %}
+                {% if card.category in ['mtg', 'yugioh', 'pokemon', 'tcg'] %}
+                  <!-- TCGPlayer widget for all supported games -->
+                  <div class="mb-3">
+                    <h5>TCGPlayer Prices</h5>
+                    <iframe src="https://www.tcgplayer.com/search/all/product?q={{ card.name|urlencode }}" width="100%" height="300" frameborder="0" style="background:#fff;"></iframe>
+                  </div>
+                {% endif %}
             {% else %}
                 <div class="alert alert-info">
                     Analysis not yet available for this card.

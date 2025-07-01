@@ -1,0 +1,6 @@
+# Google AdSense ads.txt file
+# Place this file at the root of your domain (e.g., https://mtgabyss.com/ads.txt)
+# Replace ca-pub-XXXXXXXXXXXXXXXX with your own publisher ID after approval
+
+# Google AdSense
+google.com, ca-pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
