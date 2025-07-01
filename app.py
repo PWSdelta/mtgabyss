@@ -45,33 +45,44 @@ def link_card_mentions(text, current_card_name=None):
     if not text:
         return ''
 
-
-
-
     # Only replace [b]...[/b] if [b] is not immediately followed by a letter (to avoid breaking words like Builder's)
-    # This will match [b]...[/b] only if [b] is at the start of a line, after whitespace, or after punctuation
     text = re.sub(r'(?<!\w)\[b\](.+?)\[/b\]', r'<strong>\1</strong>', text, flags=re.IGNORECASE|re.DOTALL)
 
-    # Helper to link card names (for both [[...]] and [...] patterns)
+    # Per-request cache for card name lookups
+    card_cache = {}
+
     def card_link_replacer(match):
         card_name = match.group(1)
-        # If this is the current card, just return the name (no brackets, no link)
         if current_card_name and card_name.strip().lower() == current_card_name.strip().lower():
             return card_name
-        # Try to find the card by name (case-insensitive)
+        cache_key = card_name.strip().lower()
+        if cache_key in card_cache:
+            uuid = card_cache[cache_key]
+            if uuid:
+                url = url_for('card_detail', uuid=uuid)
+                return f'<a href="{url}">{card_name}</a>'
+            else:
+                url = url_for('search', q=card_name)
+                return f'<a href="{url}">{card_name}</a>'
+        # Try to find the card by name (case-insensitive, exact match)
         card = cards.find_one({'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, {'uuid': 1})
         if card and 'uuid' in card:
+            card_cache[cache_key] = card['uuid']
             url = url_for('card_detail', uuid=card['uuid'])
             return f'<a href="{url}">{card_name}</a>'
-        else:
-            # Fallback: link to search page with card name
-            url = url_for('search', q=card_name)
+        # Try partial match if no exact match
+        card = cards.find_one({'name': {'$regex': re.escape(card_name), '$options': 'i'}}, {'uuid': 1})
+        if card and 'uuid' in card:
+            card_cache[cache_key] = card['uuid']
+            url = url_for('card_detail', uuid=card['uuid'])
             return f'<a href="{url}">{card_name}</a>'
+        # Fallback: link to search page with card name
+        card_cache[cache_key] = None
+        url = url_for('search', q=card_name)
+        return f'<a href="{url}">{card_name}</a>'
 
     # Replace [[Card Name]] and [Card Name] (but not [B] or [/B])
-    # First, handle [[...]]
     text = re.sub(r'\[\[(.+?)\]\]', card_link_replacer, text)
-    # Then, handle single brackets, but skip [B] and [/B] (case-insensitive)
     text = re.sub(r'\[(?!/?B\])(.*?)\]', card_link_replacer, text)
     return text
 
@@ -87,7 +98,7 @@ def search():
     """Card search page"""
     query = request.args.get('q', '')
     if query:
-        results = list(cards.find({'name': {'$regex': query, '$options': 'i'}}))
+        results = list(cards.find({'name': {'$regex': query, '$options': 'i'}}).limit(30))
     else:
         now = time()
         # 1 hour = 3600 seconds
@@ -95,7 +106,7 @@ def search():
             # Get 100 random cards with analysis
             results = list(cards.aggregate([
                 {'$match': {'analysis': {'$exists': True}}},
-                {'$sample': {'size': 100}}
+                {'$sample': {'size': 30}}
             ]))
             _frontpage_cache['results'] = results
             _frontpage_cache['timestamp'] = now
@@ -107,23 +118,31 @@ def search():
 def card_detail(uuid):
     """Card detail page"""
     card = cards.find_one({'uuid': uuid})
-    # Ensure category is present (default to 'mtg' if missing)
     if card and 'category' not in card:
         card['category'] = 'mtg'
-    all_cards = list(cards.find({}, {'name': 1, 'uuid': 1, 'imageUris.normal': 1, '_id': 0}))
-    # Pass current card name to template for filter use
-    return render_template('card.html', card=card, all_cards=all_cards, current_card_name=card['name'] if card else None)
+    # all_cards removed for performance
+    return render_template('card.html', card=card, current_card_name=card['name'] if card else None)
 
 @app.route('/gallery')
 def gallery():
     """Scrolling gallery page"""
-    # Example: show only rare cards with normal images
-    rare_cards = cards.find({'rarity': 'rare', 'imageUris.art_crop': {'$exists': True}}).limit(60)
-    return render_template('gallery.html', cards=rare_cards)
+    # Show only cards with art_crop images and a review
+    reviewed_cards = cards.find({
+        'imageUris.art_crop': {'$exists': True},
+        'analysis': {'$exists': True}
+    }).limit(60)
+    return render_template('gallery.html', cards=reviewed_cards)
 
 @app.route('/random')
 def random_card_redirect():
-    card = cards.aggregate([{'$sample': {'size': 1}}]).next()
+    # Only pick from reviewed cards
+    cursor = cards.aggregate([
+        {'$match': {'analysis': {'$exists': True}}},
+        {'$sample': {'size': 1}}
+    ])
+    card = next(cursor, None)
+    if not card:
+        return "No reviewed cards found", 404
     return redirect(f"/card/{card['uuid']}")
 
 # Worker API endpoints
