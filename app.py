@@ -177,6 +177,12 @@ def random_card_redirect():
         return "No reviewed cards found", 404
     return redirect(f"/card/{card['uuid']}")
 
+@app.route('/clear_cache')
+def clear_cache():
+    _frontpage_cache['results'] = []
+    _frontpage_cache['timestamp'] = 0
+    return "Cache cleared"
+
 # Worker API endpoints
 @app.route('/api/get_random_unreviewed', methods=['GET'])
 def get_random_unreviewed():
