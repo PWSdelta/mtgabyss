@@ -181,7 +181,87 @@ def card_detail(uuid):
         }},
         {'$sample': {'size': 6}}
     ]))
-    return render_template('card.html', card=card, current_card_name=card['name'] if card else None, recent_cards=recent_cards, rec_cards=rec_cards)
+
+    # --- Cards Mentioned in This Review ---
+    def extract_mentions(text):
+        # Extract [[Card Name]] and [Card Name] (but not [B] or [/B])
+        if not text:
+            return []
+        names = set()
+        # [[Card Name]]
+        for m in re.findall(r'\[\[(.+?)\]\]', text):
+            names.add(m.strip())
+        # [Card Name] but not [B] or [/B]
+        for m in re.findall(r'\[(?!/?B\])(.*?)\]', text):
+            names.add(m.strip())
+        return list(names)
+
+    mentioned_cards = []
+    if card and card.get('analysis') and card['analysis'].get('long_form'):
+        mention_names = extract_mentions(card['analysis']['long_form'])
+        if mention_names:
+            # Only include cards with analysis
+            mentioned_cards = list(cards.find({
+                'name': {'$in': mention_names},
+                'analysis.long_form': {'$exists': True, '$ne': ''}
+            }, {'uuid': 1, 'name': 1, 'imageUris.normal': 1, 'prices': 1}))
+
+    # --- Most Expensive Cards (with analysis) ---
+    import time as _time
+    if not hasattr(card_detail, '_expensive_cache'):
+        card_detail._expensive_cache = {'cards': [], 'timestamp': 0}
+    cache = card_detail._expensive_cache
+    now = _time.time()
+    cache_lifetime = 6 * 60 * 60  # 6 hours
+    if now - cache['timestamp'] > cache_lifetime:
+        pipeline = [
+            {'$match': {
+                'analysis.long_form': {'$exists': True, '$ne': ''},
+                '$or': [
+                    {'prices.usd': {'$type': 'string', '$ne': ''}},
+                    {'prices.eur': {'$type': 'string', '$ne': ''}}
+                ]
+            }},
+            {'$addFields': {
+                'world_avg': {
+                    '$cond': [
+                        {'$and': [
+                            {'$ifNull': ['$prices.usd', False]},
+                            {'$ifNull': ['$prices.eur', False]}
+                        ]},
+                        {'$divide': [
+                            {'$add': [
+                                {'$toDouble': '$prices.usd'},
+                                {'$toDouble': '$prices.eur'}
+                            ]}, 2
+                        ]},
+                        {'$cond': [
+                            {'$ifNull': ['$prices.usd', False]},
+                            {'$toDouble': '$prices.usd'},
+                            {'$toDouble': '$prices.eur'}
+                        ]}
+                    ]
+                }
+            }},
+            {'$sort': {'world_avg': -1}},
+            {'$limit': 6},
+            {'$project': {'uuid': 1, 'name': 1, 'imageUris.normal': 1, 'prices': 1}}
+        ]
+        expensive_cards = list(cards.aggregate(pipeline))
+        cache['cards'] = expensive_cards
+        cache['timestamp'] = now
+    else:
+        expensive_cards = cache['cards']
+
+    return render_template(
+        'card.html',
+        card=card,
+        current_card_name=card['name'] if card else None,
+        recent_cards=recent_cards,
+        rec_cards=rec_cards,
+        mentioned_cards=mentioned_cards,
+        expensive_cards=expensive_cards
+    )
 
 @app.route('/gallery')
 def gallery():
