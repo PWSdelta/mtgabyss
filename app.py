@@ -7,10 +7,22 @@ import re
 from datetime import datetime
 from time import time
 
+
 app = Flask(__name__)
 client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017'))
 db = client.mtgabyss
 cards = db.cards
+# Ensure indexes for fast unreviewed card queries
+try:
+    # Index for fast lookup of unreviewed cards by language (and optionally rarity/set)
+    cards.create_index([('analysis', 1), ('lang', 1)])
+    # If you often filter by rarity or set, add compound indexes as well:
+    cards.create_index([('analysis', 1), ('lang', 1), ('rarity', 1)])
+    cards.create_index([('analysis', 1), ('lang', 1), ('set', 1)])
+    # For card detail lookups
+    cards.create_index('uuid', unique=True)
+except Exception as e:
+    print(f"Could not create MongoDB indexes: {e}")
 
 # Configure logging
 logging.basicConfig(

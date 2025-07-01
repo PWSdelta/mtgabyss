@@ -21,6 +21,7 @@ LLM_MODEL = os.getenv('LLM_MODEL', 'llama3.2:3b')
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 MTGABYSS_BASE_URL = os.getenv('MTGABYSS_BASE_URL', 'http://localhost:5000')
+MTGABYSS_PUBLIC_URL = os.getenv('MTGABYSS_PUBLIC_URL', 'https://mtgabyss.com')  # For Discord links
 SCRYFALL_API_BASE = 'https://api.scryfall.com'
 
 # --- Logging ---
@@ -55,7 +56,8 @@ def fetch_random_unreviewed_card() -> Optional[Dict]:
     """Fetch a random unreviewed card from our MTGAbyss API instead of Scryfall"""
     try:
         api_url = f'{MTGABYSS_BASE_URL}/api/get_random_unreviewed?lang=en&limit=1'
-        resp = requests.get(api_url, timeout=10)
+        # Increased timeout to 60 seconds to handle slow API responses
+        resp = requests.get(api_url, timeout=60)
         resp.raise_for_status()
         data = resp.json()
         
@@ -182,7 +184,7 @@ def send_discord_notification(card: Dict) -> bool:
     try:
         card_name = card['name']
         card_uuid = card.get("uuid", card.get("id"))  # Use uuid if available, fallback to id
-        card_url = f"{MTGABYSS_BASE_URL}/card/{card_uuid}"
+        card_url = f"{MTGABYSS_PUBLIC_URL}/card/{card_uuid}"  # Use public URL for Discord
         image_url = card.get('image_uris', {}).get('normal', '')
         embed = {
             "title": f"✨ New Analysis: {card_name}",
@@ -223,7 +225,7 @@ Press Ctrl+C to stop.
     
     # Check if our API is working
     try:
-        resp = requests.get(f'{MTGABYSS_BASE_URL}/api/stats', timeout=5)
+        resp = requests.get(f'{MTGABYSS_BASE_URL}/api/stats', timeout=60)
         if resp.status_code == 200:
             stats = resp.json().get('stats', {})
             print(f"📊 Database Status:")
