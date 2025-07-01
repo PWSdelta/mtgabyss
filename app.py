@@ -172,7 +172,16 @@ def card_detail(uuid):
         {'analysis': {'$exists': True}, 'uuid': {'$ne': uuid}},
         {'uuid': 1, 'name': 1, 'imageUris.normal': 1}
     ).sort([('analysis.analyzed_at', -1)]).limit(5))
-    return render_template('card.html', card=card, current_card_name=card['name'] if card else None, recent_cards=recent_cards)
+    # Get 6 random cards with analysis and image, not this one, for recommendations
+    rec_cards = list(cards.aggregate([
+        {'$match': {
+            'analysis': {'$exists': True},
+            'imageUris.normal': {'$exists': True},
+            'uuid': {'$ne': uuid}
+        }},
+        {'$sample': {'size': 6}}
+    ]))
+    return render_template('card.html', card=card, current_card_name=card['name'] if card else None, recent_cards=recent_cards, rec_cards=rec_cards)
 
 @app.route('/gallery')
 def gallery():

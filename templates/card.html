@@ -96,10 +96,7 @@
                         <strong>Release Date:</strong>
                         <span class="ms-1">{{ card.released_at or "—" }}</span>
                     </div>
-                    <div class="mb-2">
-                        <strong>Legalities:</strong>
-                        <span class="ms-1">{{ card.legalities | dictsort if card.legalities else "—" }}</span>
-                    </div>
+                    <!-- Legalities removed: see Scryfall for full details -->
                     {% if card.imageUris and card.imageUris.art_crop %}
                     <div class="mb-2">
                         <img src="{{ card.imageUris.art_crop }}" alt="Art crop" class="img-fluid rounded" style="max-height: 80px;">
@@ -107,21 +104,40 @@
                     {% endif %}
                     <!-- Rulings Accordion (async loaded) -->
                     <div id="rulings-accordion" class="mt-3"></div>
+                    <!-- Recent Analyses Section (moved to sidebar) -->
+                    <div class="card mt-4">
+                        <div class="card-header bg-secondary text-white">
+                            <h5 class="mb-0">Recent Analyses</h5>
+                        </div>
+                        <ul class="list-group list-group-flush">
+                            {% for rc in recent_cards %}
+                            <li class="list-group-item d-flex align-items-center">
+                                <a href="/card/{{ rc.uuid }}" class="me-2 recent-card-popover" data-image="{{ rc.imageUris.normal if rc.imageUris and rc.imageUris.normal else url_for('static', filename='img/cardback.png') }}">
+                                    {% if rc.imageUris and rc.imageUris.normal %}
+                                        <img src="{{ rc.imageUris.normal }}" alt="{{ rc.name }}" style="width:40px; height:56px; object-fit:cover; border-radius:4px;">
+                                    {% else %}
+                                        <img src="{{ url_for('static', filename='img/cardback.png') }}" alt="No image" style="width:40px; height:56px; object-fit:cover; border-radius:4px;">
+                                    {% endif %}
+                                </a>
+                                <a href="/card/{{ rc.uuid }}" class="recent-card-popover" data-image="{{ rc.imageUris.normal if rc.imageUris and rc.imageUris.normal else url_for('static', filename='img/cardback.png') }}">{{ rc.name }}</a>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
                 </div>
 {% block scripts %}
-{{ super() }}
 <script>
 // --- Async Scryfall Rulings Fetch ---
 document.addEventListener('DOMContentLoaded', function() {
+    // Rulings fetch
     const scryfallId = "{{ card.scryfall_id }}";
-    if (!scryfallId || scryfallId === 'null' || scryfallId === '') return;
-    if (!scryfallId) return;
-    fetch(`https://api.scryfall.com/cards/${scryfallId}/rulings`)
-        .then(resp => resp.json())
-        .then(data => {
-            if (!data || !data.data || !Array.isArray(data.data) || data.data.length === 0) return;
-            const rulings = data.data;
-            let html = `<div class="accordion" id="rulingsAccordion">
+    if (scryfallId && scryfallId !== 'null' && scryfallId !== '') {
+        fetch(`https://api.scryfall.com/cards/${scryfallId}/rulings`)
+            .then(resp => resp.json())
+            .then(data => {
+                if (!data || !data.data || !Array.isArray(data.data) || data.data.length === 0) return;
+                const rulings = data.data;
+                let html = `<div class="accordion" id="rulingsAccordion">
   <div class="accordion-item">
     <h2 class="accordion-header" id="headingRulings">
       <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseRulings" aria-expanded="false" aria-controls="collapseRulings">
@@ -131,23 +147,55 @@ document.addEventListener('DOMContentLoaded', function() {
     <div id="collapseRulings" class="accordion-collapse collapse" aria-labelledby="headingRulings" data-bs-parent="#rulingsAccordion">
       <div class="accordion-body">
         <ul class="list-unstyled mb-0">`;
-            for (const r of rulings) {
-                html += `<li class="mb-2"><span class="text-muted small">${r.published_at}:</span> ${r.comment}</li>`;
-            }
-            html += `</ul>
+                for (const r of rulings) {
+                    html += `<li class="mb-2"><span class="text-muted small">${r.published_at}:</span> ${r.comment}</li>`;
+                }
+                html += `</ul>
       </div>
     </div>
   </div>
 </div>`;
-            document.getElementById('rulings-accordion').innerHTML = html;
+                document.getElementById('rulings-accordion').innerHTML = html;
+            });
+    }
+
+    // Popover for recent analyses (image and name)
+    document.querySelectorAll('.recent-card-popover, .card-maylike-popover').forEach(function(link) {
+        let pop;
+        link.addEventListener('mouseenter', function(e) {
+            if (pop) return;
+            const imgUrl = link.getAttribute('data-image');
+            if (!imgUrl) return;
+            pop = document.createElement('div');
+            pop.className = 'card-mention-image-pop';
+            pop.innerHTML = `<img src="${imgUrl}" alt="Card image" style="max-width:250px;max-height:350px;box-shadow:0 2px 8px rgba(0,0,0,0.3);border-radius:6px;">`;
+            link.appendChild(pop);
+            pop.style.position = 'absolute';
+            pop.style.left = '100%';
+            pop.style.top = '0';
+            pop.style.marginLeft = '10px';
+            pop.style.display = 'block';
+            pop.style.zIndex = 9999;
         });
+        link.addEventListener('mouseleave', function(e) {
+            if (pop) {
+                pop.remove();
+                pop = null;
+            }
+        });
+    });
 });
 </script>
+<style>
+.recent-card-popover { position: relative; display: inline-block; }
+.card-mention-image-pop { display: none; position: absolute; background: #222; border: 1px solid #888; padding: 2px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+.recent-card-popover:hover .card-mention-image-pop { display: block; }
+</style>
 {% endblock %}
             </div>
         </div>
 
-        <!-- Analysis Column and Recent Analyses Sidebar -->
+        <!-- Analysis Column -->
         <div class="col-md-8">
             {% if card.analysis %}
                 <div class="card shadow-sm mb-4">
@@ -173,25 +221,103 @@ document.addEventListener('DOMContentLoaded', function() {
                     Check back soon, or explore similar cards below!
                 </div>
             {% endif %}
-            <!-- Recent Analyses Section -->
-            <div class="card mt-4">
-                <div class="card-header bg-secondary text-white">
-                    <h5 class="mb-0">Recent Analyses</h5>
+        </div>
+    </div>
+
+    <!-- Cards You May Like / Recommendations -->
+    <div class="row mt-5 mb-4">
+        <div class="col-12">
+            <div class="card shadow-sm">
+                <div class="card-header bg-info text-white">
+                    <h5 class="mb-0">Cards You May Like</h5>
                 </div>
-                <ul class="list-group list-group-flush">
-                    {% for rc in recent_cards %}
-                    <li class="list-group-item d-flex align-items-center">
-                        <a href="/card/{{ rc.uuid }}" class="me-2">
-                            {% if rc.imageUris and rc.imageUris.normal %}
-                                <img src="{{ rc.imageUris.normal }}" alt="{{ rc.name }}" style="width:40px; height:56px; object-fit:cover; border-radius:4px;">
-                            {% else %}
-                                <img src="{{ url_for('static', filename='img/cardback.png') }}" alt="No image" style="width:40px; height:56px; object-fit:cover; border-radius:4px;">
-                            {% endif %}
-                        </a>
-                        <a href="/card/{{ rc.uuid }}">{{ rc.name }}</a>
-                    </li>
-                    {% endfor %}
-                </ul>
+                <div class="card-body">
+                    <div class="row row-cols-2 row-cols-md-3 g-3">
+                        {% for rec in rec_cards %}
+                        <div class="col">
+                            <a href="/card/{{ rec.uuid }}" class="text-decoration-none text-dark card-maylike-popover" data-image="{{ rec.imageUris.normal if rec.imageUris and rec.imageUris.normal else url_for('static', filename='img/cardback.png') }}">
+                                <div class="card h-100 border-0">
+                                    <img src="{{ rec.imageUris.normal if rec.imageUris and rec.imageUris.normal else url_for('static', filename='img/cardback.png') }}" class="card-img-top rounded" alt="{{ rec.name }}" style="max-height: 180px; object-fit: contain;">
+                                    <div class="card-body p-2">
+                                        <div class="fw-bold small text-center">{{ rec.name }}</div>
+                                    </div>
+                                </div>
+                            </a>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cards Mentioned in This Review & Most Expensive Cards -->
+    <div class="row mb-5">
+        <div class="col-md-6 mb-4">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0">Cards Mentioned in This Review</h5>
+                </div>
+                <div class="card-body">
+                    {% if mentioned_cards and mentioned_cards|length > 0 %}
+                    <div class="row row-cols-2 row-cols-md-2 g-3">
+                        {% for m in mentioned_cards %}
+                        <div class="col">
+                            <a href="/card/{{ m.uuid }}" class="text-decoration-none text-dark card-maylike-popover" data-image="{{ m.imageUris.normal if m.imageUris and m.imageUris.normal else url_for('static', filename='img/cardback.png') }}">
+                                <div class="card h-100 border-0">
+                                    <img src="{{ m.imageUris.normal if m.imageUris and m.imageUris.normal else url_for('static', filename='img/cardback.png') }}" class="card-img-top rounded" alt="{{ m.name }}" style="max-height: 120px; object-fit: contain;">
+                                    <div class="card-body p-2">
+                                        <div class="fw-bold small text-center">{{ m.name }}</div>
+                                    </div>
+                                </div>
+                            </a>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                        <div class="text-muted">No other cards mentioned in this review.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6 mb-4">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-warning text-dark">
+                    <h5 class="mb-0">Most Expensive Cards</h5>
+                </div>
+                <div class="card-body">
+                    {% if expensive_cards and expensive_cards|length > 0 %}
+                    <div class="row row-cols-2 row-cols-md-2 g-3">
+                        {% for e in expensive_cards %}
+                        <div class="col">
+                            <a href="/card/{{ e.uuid }}" class="text-decoration-none text-dark card-maylike-popover" data-image="{{ e.imageUris.normal if e.imageUris and e.imageUris.normal else url_for('static', filename='img/cardback.png') }}">
+                                <div class="card h-100 border-0">
+                                    <img src="{{ e.imageUris.normal if e.imageUris and e.imageUris.normal else url_for('static', filename='img/cardback.png') }}" class="card-img-top rounded" alt="{{ e.name }}" style="max-height: 120px; object-fit: contain;">
+                                    <div class="card-body p-2">
+                                        <div class="fw-bold small text-center">{{ e.name }}</div>
+                                        <div class="small text-center text-muted">
+                                            {% set usd = e.prices.usd|float if e.prices and e.prices.usd else None %}
+                                            {% set eur = e.prices.eur|float if e.prices and e.prices.eur else None %}
+                                            {% if usd is not none and eur is not none %}
+                                                ${{ '%.2f' % ((usd + eur)/2) }}
+                                            {% elif usd is not none %}
+                                                ${{ '%.2f' % usd }}
+                                            {% elif eur is not none %}
+                                                €{{ '%.2f' % eur }}
+                                            {% else %}
+                                                —
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </a>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                        <div class="text-muted">No expensive cards found.</div>
+                    {% endif %}
+                </div>
             </div>
         </div>
     </div>
