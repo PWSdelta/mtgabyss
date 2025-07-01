@@ -44,8 +44,12 @@ def markdown_filter(text):
 def link_card_mentions(text, current_card_name=None):
     if not text:
         return ''
-    # Find all [[Card Name]]
-    def replacer(match):
+
+    # Convert [B]...[/B] and [b]...[/b] to <strong>...</strong>
+    text = re.sub(r'\[/?B\]', lambda m: '<strong>' if m.group(0).lower() == '[b]' else '</strong>', text, flags=re.IGNORECASE)
+
+    # Helper to link card names (for both [[...]] and [...] patterns)
+    def card_link_replacer(match):
         card_name = match.group(1)
         # If this is the current card, just return the name (no brackets, no link)
         if current_card_name and card_name.strip().lower() == current_card_name.strip().lower():
@@ -59,8 +63,13 @@ def link_card_mentions(text, current_card_name=None):
             # Fallback: link to search page with card name
             url = url_for('search', q=card_name)
             return f'<a href="{url}">{card_name}</a>'
-    # Replace all [[Card Name]] with links, except for the current card
-    return re.sub(r'\[\[(.+?)\]\]', replacer, text)
+
+    # Replace [[Card Name]] and [Card Name] (but not [B] or [/B])
+    # First, handle [[...]]
+    text = re.sub(r'\[\[(.+?)\]\]', card_link_replacer, text)
+    # Then, handle single brackets, but skip [B] and [/B] (case-insensitive)
+    text = re.sub(r'\[(?!/?B\])(.*?)\]', card_link_replacer, text)
+    return text
 
 # Simple in-memory cache for randomized homepage results
 _frontpage_cache = {
