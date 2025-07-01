@@ -45,8 +45,9 @@ def link_card_mentions(text, current_card_name=None):
     if not text:
         return ''
 
-    # Convert [B]...[/B] and [b]...[/b] to <strong>...</strong>
-    text = re.sub(r'\[/?B\]', lambda m: '<strong>' if m.group(0).lower() == '[b]' else '</strong>', text, flags=re.IGNORECASE)
+
+    # Convert [B]...[/B] and [b]...[/b] to <strong>...</strong> (greedy, multiline safe)
+    text = re.sub(r'\[b\](.+?)\[/b\]', r'<strong>\1</strong>', text, flags=re.IGNORECASE|re.DOTALL)
 
     # Helper to link card names (for both [[...]] and [...] patterns)
     def card_link_replacer(match):
