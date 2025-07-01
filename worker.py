@@ -111,17 +111,20 @@ def generate_analysis(card: Dict) -> Optional[str]:
         logger.error(f"LLM error: {e}")
         return None
 
-def save_to_database(card: dict, analysis: str) -> bool:
+def save_to_database(card: dict, analysis: str, native_analysis: str = None) -> bool:
     try:
         # Set category for the card (default to 'mtg' for Scryfall)
         card_category = 'mtg'  # If you add other games, update this logic
+        analysis_dict = {
+            "long_form": analysis,
+            "analyzed_at": datetime.now().isoformat(),
+            "model_used": LLM_MODEL
+        }
+        if native_analysis:
+            analysis_dict["native_language_long_form"] = native_analysis
         payload = {
             "uuid": card["id"],
-            "analysis": {
-                "long_form": analysis,
-                "analyzed_at": datetime.now().isoformat(),
-                "model_used": LLM_MODEL
-            },
+            "analysis": analysis_dict,
             "category": card_category,
             "card_data": card
         }
@@ -188,14 +191,14 @@ Press Ctrl+C to stop.
             time.sleep(10)
             continue
 
-        # First pass: generate raw analysis
+        # First pass: generate raw analysis (English)
         raw_analysis = generate_analysis(card)
         if not raw_analysis:
             logger.error(f"Failed to generate analysis for {card['name']}")
             time.sleep(5)
             continue
 
-        # Second pass: polish the analysis
+        # Second pass: polish the analysis (English)
         polish_prompt = create_polish_prompt(card, raw_analysis)
         try:
             logger.info(f"Polishing analysis for {card['name']} using {LLM_MODEL}")
@@ -216,13 +219,39 @@ Press Ctrl+C to stop.
             logger.error(f"LLM error during polish: {e}")
             continue
 
+        # If card is not English, generate native language analysis
+        native_lang = card.get('lang', 'en')
+        native_analysis = None
+        if native_lang != 'en':
+            logger.info(f"Card {card['name']} is in {native_lang}. Generating native language analysis...")
+            # Prompt in the card's language
+            native_prompt = f"""Write a comprehensive, in-depth analysis guide for the Magic: The Gathering card [[{card['name']}]] in {native_lang} (the card's printed language).\n\nInclude:\n- TL;DR summary\n- Detailed card mechanics and interactions\n- Strategic uses, combos, and synergies\n- Deckbuilding roles and archetypes\n- Format viability and competitive context\n- Rules interactions and technical notes\n- Art, flavor, and historical context\n- Summary of key points (use a different section title for this)\n\nUse natural paragraphs, markdown headers, and liberal use of specific card examples in [[double brackets]]. Do not use bullet points. Write at least 3357 words. Do not mention yourself or the analysis process.\nWrap up with a conclusion summary\n\nCard details:\nName: {card['name']}\nMana Cost: {card.get('mana_cost', 'N/A')}\nType: {card.get('type_line', 'N/A')}\nText: {card.get('oracle_text', 'N/A')}\n{f'P/T: {card.get('power')}/{card.get('toughness')}' if 'power' in card else ''}\n"""
+            try:
+                response = ollama.generate(
+                    model=LLM_MODEL,
+                    prompt=native_prompt,
+                    options={'timeout': 300}
+                )
+                native_analysis = response.get('response', '')
+                if len(native_analysis) < 1000:
+                    logger.warning(f"Native language analysis too short for {card['name']}")
+                    native_analysis = None
+                else:
+                    logger.info(f"Native language analysis generated ({len(native_analysis)} chars)")
+            except Exception as e:
+                logger.error(f"LLM error during native language analysis: {e}")
+                native_analysis = None
+
         # Add a newline between each card analysis for clarity
         print("\n" + "="*80 + "\n")
         print(f"Analysis for card: {card['name']}")
         print(polished_analysis)
+        if native_analysis:
+            print("\n--- Native Language Analysis ---\n")
+            print(native_analysis)
         print("\n" + "="*80 + "\n")
 
-        if save_to_database(card, polished_analysis):
+        if save_to_database(card, polished_analysis, native_analysis):
             send_discord_notification(card)
             elapsed = time.time() - round_start
             logger.info(f"[SimpleLog] Finished {card['name']} in {elapsed:.2f} seconds.")

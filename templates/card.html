@@ -80,6 +80,12 @@
                     <div class="card-body markdown-content">
                         {{ card.analysis.long_form | link_card_mentions(current_card_name) | markdown | safe }}
                     </div>
+                    {% if card.analysis.native_language_long_form %}
+                    <div class="card-body markdown-content border-top mt-4 pt-3">
+                        <h5 class="text-secondary">Native Language Analysis</h5>
+                        {{ card.analysis.native_language_long_form | markdown | safe }}
+                    </div>
+                    {% endif %}
                 </div>
                 <!-- Per-category widgets/charts -->
                 {% if card.category == 'mtg' %}
