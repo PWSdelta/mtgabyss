@@ -98,16 +98,32 @@ def search():
     """Card search page"""
     query = request.args.get('q', '')
     if query:
-        results = list(cards.find({'name': {'$regex': query, '$options': 'i'}}).limit(30))
+        # Sort by prices.usd descending, treat missing or non-numeric as 0
+        results = list(cards.find({
+            'name': {'$regex': query, '$options': 'i'},
+            'analysis': {'$exists': True},
+            'imageUris.normal': {'$exists': True}
+        }).sort([('prices.usd', -1)]).limit(30))
     else:
         now = time()
         # 1 hour = 3600 seconds
         if not _frontpage_cache['results'] or now - _frontpage_cache['timestamp'] > 3600:
-            # Get 100 random cards with analysis
+            # Get 30 random English cards with analysis and normal image, then sort by prices.usd descending
             results = list(cards.aggregate([
-                {'$match': {'analysis': {'$exists': True}}},
-                {'$sample': {'size': 30}}
+                {'$match': {
+                    'analysis': {'$exists': True},
+                    'imageUris.normal': {'$exists': True},
+                    'lang': 'en'
+                }},
+                {'$sample': {'size': 60}}
             ]))
+            # Sort in Python since $sample is used
+            def price_usd(card):
+                try:
+                    return float(card.get('prices', {}).get('usd') or 0)
+                except Exception:
+                    return 0
+            results = sorted(results, key=price_usd, reverse=True)[:30]
             _frontpage_cache['results'] = results
             _frontpage_cache['timestamp'] = now
         else:
