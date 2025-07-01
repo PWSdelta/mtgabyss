@@ -172,11 +172,14 @@ def card_detail(uuid):
     card = cards.find_one({'uuid': uuid})
     if card and 'category' not in card:
         card['category'] = 'mtg'
-    # Get 5 most recent analyzed cards (excluding this one)
-    recent_cards = list(cards.find(
-        {'analysis': {'$exists': True}, 'uuid': {'$ne': uuid}},
-        {'uuid': 1, 'name': 1, 'imageUris.normal': 1}
-    ).sort([('analysis.analyzed_at', -1)]).limit(5))
+    # Get 5 most recent analyzed cards (excluding this one), cached for 2 hours
+    @cache.cached(timeout=7200, key_prefix=lambda: f"recent_cards_ex_{uuid}")
+    def get_recent_cards():
+        return list(cards.find(
+            {'analysis': {'$exists': True}, 'uuid': {'$ne': uuid}},
+            {'uuid': 1, 'name': 1, 'imageUris.normal': 1}
+        ).sort([('analysis.analyzed_at', -1)]).limit(5))
+    recent_cards = get_recent_cards()
     # Get 6 random cards with analysis and image, not this one, for recommendations
     rec_cards = list(cards.aggregate([
         {'$match': {
