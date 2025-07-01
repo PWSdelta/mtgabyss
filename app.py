@@ -167,8 +167,12 @@ def card_detail(uuid):
     card = cards.find_one({'uuid': uuid})
     if card and 'category' not in card:
         card['category'] = 'mtg'
-    # all_cards removed for performance
-    return render_template('card.html', card=card, current_card_name=card['name'] if card else None)
+    # Get 5 most recent analyzed cards (excluding this one)
+    recent_cards = list(cards.find(
+        {'analysis': {'$exists': True}, 'uuid': {'$ne': uuid}},
+        {'uuid': 1, 'name': 1, 'imageUris.normal': 1}
+    ).sort([('analysis.analyzed_at', -1)]).limit(5))
+    return render_template('card.html', card=card, current_card_name=card['name'] if card else None, recent_cards=recent_cards)
 
 @app.route('/gallery')
 def gallery():
