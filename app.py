@@ -1,4 +1,5 @@
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
+from flask_caching import Cache
 from pymongo import MongoClient
 import os
 import logging
@@ -9,6 +10,7 @@ from time import time
 
 
 app = Flask(__name__)
+cache = Cache(app, config={'CACHE_TYPE': 'filesystem', 'CACHE_DIR': './flask_cache'})
 client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017'))
 db = client.mtgabyss
 cards = db.cards
@@ -47,6 +49,9 @@ def link_card_mentions(text, current_card_name=None):
 
     # Only replace [b]...[/b] if [b] is not immediately followed by a letter (to avoid breaking words like Builder's)
     text = re.sub(r'(?<!\w)\[b\](.+?)\[/b\]', r'<strong>\1</strong>', text, flags=re.IGNORECASE|re.DOTALL)
+
+    # Also convert {{Card Name}} to [Card Name] for linking
+    text = re.sub(r'\{\{([^}]+)\}\}', r'[\1]', text)
 
     # Per-request cache for card name lookups
     card_cache = {}
@@ -206,14 +211,9 @@ def card_detail(uuid):
                 'analysis.long_form': {'$exists': True, '$ne': ''}
             }, {'uuid': 1, 'name': 1, 'imageUris.normal': 1, 'prices': 1}))
 
-    # --- Most Expensive Cards (with analysis) ---
-    import time as _time
-    if not hasattr(card_detail, '_expensive_cache'):
-        card_detail._expensive_cache = {'cards': [], 'timestamp': 0}
-    cache = card_detail._expensive_cache
-    now = _time.time()
-    cache_lifetime = 6 * 60 * 60  # 6 hours
-    if now - cache['timestamp'] > cache_lifetime:
+    # --- Most Expensive Cards (with analysis, cached) ---
+    @cache.cached(timeout=6*60*60, key_prefix='expensive_cards')
+    def get_expensive_cards():
         pipeline = [
             {'$match': {
                 'analysis.long_form': {'$exists': True, '$ne': ''},
@@ -247,11 +247,9 @@ def card_detail(uuid):
             {'$limit': 6},
             {'$project': {'uuid': 1, 'name': 1, 'imageUris.normal': 1, 'prices': 1}}
         ]
-        expensive_cards = list(cards.aggregate(pipeline))
-        cache['cards'] = expensive_cards
-        cache['timestamp'] = now
-    else:
-        expensive_cards = cache['cards']
+        return list(cards.aggregate(pipeline))
+
+    expensive_cards = get_expensive_cards()
 
     return render_template(
         'card.html',
