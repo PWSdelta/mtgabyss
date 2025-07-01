@@ -8,6 +8,7 @@ saves to MongoDB, and posts to Discord.
 import os
 import time
 import requests
+import logging
 from datetime import datetime
 from typing import Dict, Optional
 import ollama
@@ -16,18 +17,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Config ---
-LLM_MODEL = 'llama3.2:3b'
+LLM_MODEL = os.getenv('LLM_MODEL', 'llama3.2:3b')
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 MTGABYSS_BASE_URL = os.getenv('MTGABYSS_BASE_URL', 'http://localhost:5000')
 SCRYFALL_API_BASE = 'https://api.scryfall.com'
 
 # --- Logging ---
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format='%(asctime)s - MTG_WORKER - %(levelname)s - %(message)s'
-# )
-# logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - MTG_WORKER - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 def simple_log(msg):
     print(msg)
@@ -91,20 +92,23 @@ Do not mention yourself or the analysis process.
 def generate_analysis(card: Dict) -> Optional[str]:
     prompt = create_analysis_prompt(card)
     try:
-        simple_log(f"Generating analysis for {card['name']} using {LLM_MODEL}")
+        logger.info(f"Generating analysis for {card['name']} using {LLM_MODEL}")
+        start_time = time.time()
         response = ollama.generate(
             model=LLM_MODEL,
             prompt=prompt,
             options={'timeout': 300}
         )
+        elapsed = time.time() - start_time
+        logger.info(f"Analysis generation took {elapsed:.2f} seconds for {card['name']}")
         text = response.get('response', '')
         if len(text) < 1000:
-            simple_log(f"Analysis too short for {card['name']}")
+            logger.warning(f"Analysis too short for {card['name']}")
             return None
-        simple_log(f"Analysis generated ({len(text)} chars)")
+        logger.info(f"Analysis generated ({len(text)} chars)")
         return text
     except Exception as e:
-        simple_log(f"LLM error: {e}")
+        logger.error(f"LLM error: {e}")
         return None
 
 def save_to_database(card: dict, analysis: str) -> bool:
@@ -187,32 +191,41 @@ Press Ctrl+C to stop.
         # First pass: generate raw analysis
         raw_analysis = generate_analysis(card)
         if not raw_analysis:
-            simple_log(f"Failed to generate analysis for {card['name']}")
+            logger.error(f"Failed to generate analysis for {card['name']}")
             time.sleep(5)
             continue
 
         # Second pass: polish the analysis
         polish_prompt = create_polish_prompt(card, raw_analysis)
         try:
-            simple_log(f"Polishing analysis for {card['name']} using {LLM_MODEL}")
+            logger.info(f"Polishing analysis for {card['name']} using {LLM_MODEL}")
+            start_time = time.time()
             response = ollama.generate(
                 model=LLM_MODEL,
                 prompt=polish_prompt,
                 options={'timeout': 300}
             )
+            elapsed = time.time() - start_time
+            logger.info(f"Polishing took {elapsed:.2f} seconds for {card['name']}")
             polished_analysis = response.get('response', '')
             if len(polished_analysis) < 1000:
-                simple_log(f"Polished analysis too short for {card['name']}")
+                logger.warning(f"Polished analysis too short for {card['name']}")
                 continue
-            simple_log(f"Polished analysis generated ({len(polished_analysis)} chars)")
+            logger.info(f"Polished analysis generated ({len(polished_analysis)} chars)")
         except Exception as e:
-            simple_log(f"LLM error during polish: {e}")
+            logger.error(f"LLM error during polish: {e}")
             continue
+
+        # Add a newline between each card analysis for clarity
+        print("\n" + "="*80 + "\n")
+        print(f"Analysis for card: {card['name']}")
+        print(polished_analysis)
+        print("\n" + "="*80 + "\n")
 
         if save_to_database(card, polished_analysis):
             send_discord_notification(card)
             elapsed = time.time() - round_start
-            simple_log(f"[SimpleLog] Finished {card['name']} in {elapsed:.2f} seconds.")
+            logger.info(f"[SimpleLog] Finished {card['name']} in {elapsed:.2f} seconds.")
 
 if __name__ == "__main__":
     main()
