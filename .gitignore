@@ -67,6 +67,7 @@ instance/
 # MongoDB dump files
 dump/
 
-
+.venv/
 claude_test.py
 downloads/
+flask_cache/
