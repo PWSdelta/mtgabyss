@@ -98,12 +98,23 @@ def search():
     """Card search page"""
     query = request.args.get('q', '')
     if query:
-        # Sort by prices.usd descending, treat missing or non-numeric as 0
+        # Get and sort in Python to avoid MongoDB sort on string/NaN values
         results = list(cards.find({
             'name': {'$regex': query, '$options': 'i'},
             'analysis': {'$exists': True},
             'imageUris.normal': {'$exists': True}
-        }).sort([('prices.usd', -1)]).limit(30))
+        }).limit(60))
+        import math
+        def price_usd(card):
+            val = card.get('prices', {}).get('usd')
+            try:
+                fval = float(val)
+                if math.isnan(fval) or math.isinf(fval):
+                    return 0
+                return fval
+            except Exception:
+                return 0
+        results = sorted(results, key=price_usd, reverse=True)[:30]
     else:
         now = time()
         # 1 hour = 3600 seconds
