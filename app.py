@@ -56,34 +56,49 @@ def link_card_mentions(text, current_card_name=None):
         if current_card_name and card_name.strip().lower() == current_card_name.strip().lower():
             return card_name
         cache_key = card_name.strip().lower()
-        if cache_key in card_cache:
-            uuid = card_cache[cache_key]
-            if uuid:
-                url = url_for('card_detail', uuid=uuid)
-                return f'<a href="{url}">{card_name}</a>'
+        card_data = card_cache.get(cache_key)
+        if card_data is None:
+            # Try to find the card by name (case-insensitive, exact match)
+            card = cards.find_one({'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, {'uuid': 1, 'imageUris.normal': 1})
+            if not card or 'uuid' not in card:
+                # Try partial match if no exact match
+                card = cards.find_one({'name': {'$regex': re.escape(card_name), '$options': 'i'}}, {'uuid': 1, 'imageUris.normal': 1})
+            if card and 'uuid' in card:
+                card_data = {'uuid': card['uuid'], 'image': card.get('imageUris', {}).get('normal')}
             else:
-                url = url_for('search', q=card_name)
+                card_data = None
+            card_cache[cache_key] = card_data
+        uuid = card_data['uuid'] if card_data else None
+        image_url = card_data['image'] if card_data and 'image' in card_data else None
+        if uuid:
+            url = url_for('card_detail', uuid=uuid)
+            if image_url:
+                # Add Bootstrap popover attributes for image preview
+                return (
+                    f'<a href="{url}" class="card-mention-popover" '
+                    f'data-bs-toggle="popover" data-bs-trigger="hover focus" data-bs-placement="top" '
+                    f'data-bs-html="true" data-bs-content="<img src=\'{image_url}\' style=\'max-width:110px;max-height:160px;\'/>">{card_name}</a>'
+                )
+            else:
                 return f'<a href="{url}">{card_name}</a>'
-        # Try to find the card by name (case-insensitive, exact match)
-        card = cards.find_one({'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, {'uuid': 1})
-        if card and 'uuid' in card:
-            card_cache[cache_key] = card['uuid']
-            url = url_for('card_detail', uuid=card['uuid'])
+        else:
+            url = url_for('search', q=card_name)
             return f'<a href="{url}">{card_name}</a>'
-        # Try partial match if no exact match
-        card = cards.find_one({'name': {'$regex': re.escape(card_name), '$options': 'i'}}, {'uuid': 1})
-        if card and 'uuid' in card:
-            card_cache[cache_key] = card['uuid']
-            url = url_for('card_detail', uuid=card['uuid'])
-            return f'<a href="{url}">{card_name}</a>'
-        # Fallback: link to search page with card name
-        card_cache[cache_key] = None
-        url = url_for('search', q=card_name)
-        return f'<a href="{url}">{card_name}</a>'
 
     # Replace [[Card Name]] and [Card Name] (but not [B] or [/B])
     text = re.sub(r'\[\[(.+?)\]\]', card_link_replacer, text)
     text = re.sub(r'\[(?!/?B\])(.*?)\]', card_link_replacer, text)
+    # Add Bootstrap popover JS only once per request (idempotent)
+    if '<script id="card-mention-popover-js">' not in text:
+        popover_js = '''<script id="card-mention-popover-js">
+        document.addEventListener('DOMContentLoaded', function() {
+          var popoverTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="popover"]'));
+          popoverTriggerList.forEach(function (popoverTriggerEl) {
+            new bootstrap.Popover(popoverTriggerEl);
+          });
+        });
+        </script>'''
+        text += popover_js
     return text
 
 # Simple in-memory cache for randomized homepage results
