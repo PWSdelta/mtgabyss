@@ -47,16 +47,10 @@ def link_card_mentions(text, current_card_name=None):
 
 
 
-    # Fix: Only replace [b]...[/b] if not immediately followed by a non-word character (to avoid cutting off B at start)
-    # This will not match a lone [B] at the start of a word (e.g. Builder's)
-    def bbcode_bold_fix(m):
-        # Only match if [b] is not immediately followed by a single quote or letter (to avoid 'Builder's')
-        before = m.string[m.start()-1] if m.start() > 0 else ''
-        if before.isalpha() or before == "'":
-            return m.group(0)  # Don't replace
-        return f"<strong>{m.group(1)}</strong>"
 
-    text = re.sub(r'\[b\](.+?)\[/b\]', bbcode_bold_fix, text, flags=re.IGNORECASE|re.DOTALL)
+    # Only replace [b]...[/b] if [b] is not immediately followed by a letter (to avoid breaking words like Builder's)
+    # This will match [b]...[/b] only if [b] is at the start of a line, after whitespace, or after punctuation
+    text = re.sub(r'(?<!\w)\[b\](.+?)\[/b\]', r'<strong>\1</strong>', text, flags=re.IGNORECASE|re.DOTALL)
 
     # Helper to link card names (for both [[...]] and [...] patterns)
     def card_link_replacer(match):
