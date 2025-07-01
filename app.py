@@ -123,7 +123,7 @@ def search():
             'name': {'$regex': query, '$options': 'i'},
             'analysis': {'$exists': True},
             'imageUris.normal': {'$exists': True}
-        }).limit(60))
+        }).limit(30))
         import math
         def price_usd(card):
             val = card.get('prices', {}).get('usd')
@@ -146,7 +146,7 @@ def search():
                     'imageUris.normal': {'$exists': True},
                     'lang': 'en'
                 }},
-                {'$sample': {'size': 60}}
+                {'$sample': {'size': 30}}
             ]))
             # Sort in Python since $sample is used
             import math
