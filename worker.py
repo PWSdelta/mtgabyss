@@ -38,17 +38,50 @@ def simple_log(msg):
 # db = client.mtg
 # cards = db.cards
 
-def fetch_random_card() -> Optional[Dict]:
+def fetch_random_card_fallback() -> Optional[Dict]:
+    """Fallback to Scryfall if our API is unavailable"""
     try:
         resp = requests.get(f'{SCRYFALL_API_BASE}/cards/random', timeout=10)
         resp.raise_for_status()
         card = resp.json()
-        simple_log(f"Fetched card: {card['name']} ({card['id']})")
+        simple_log(f"Fallback - Fetched card: {card['name']} ({card['id']})")
         card['imageUris'] = card.get('image_uris', {})
         return card
     except Exception as e:
-        simple_log(f"Error fetching card: {e}")
+        simple_log(f"Fallback error fetching card: {e}")
         return None
+
+def fetch_random_unreviewed_card() -> Optional[Dict]:
+    """Fetch a random unreviewed card from our MTGAbyss API instead of Scryfall"""
+    try:
+        api_url = f'{MTGABYSS_BASE_URL}/api/get_random_unreviewed?lang=en&limit=1'
+        resp = requests.get(api_url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data['status'] == 'no_cards':
+            simple_log("No more unreviewed cards available!")
+            return None
+        
+        if data['status'] != 'success' or not data.get('cards'):
+            simple_log(f"API error: {data.get('message', 'Unknown error')}")
+            return None
+        
+        card = data['cards'][0]  # Get the first (and likely only) card
+        simple_log(f"Fetched unreviewed card: {card['name']} (UUID: {card['uuid']})")
+        simple_log(f"Progress: {data['total_unreviewed']:,} unreviewed cards remaining")
+        
+        # Convert to format expected by rest of the code
+        card['id'] = card['uuid']  # worker expects 'id' field
+        card['image_uris'] = card.get('image_uris', {})
+        
+        return card
+        
+    except Exception as e:
+        simple_log(f"Error fetching unreviewed card from API: {e}")
+        # Fallback to Scryfall if our API is down
+        simple_log("Falling back to Scryfall random card...")
+        return fetch_random_card_fallback()
 
 def create_analysis_prompt(card: Dict) -> str:
     return f"""Write a comprehensive, in-depth analysis guide for the Magic: The Gathering card [[{card['name']}]].
@@ -123,7 +156,7 @@ def save_to_database(card: dict, analysis: str, native_analysis: str = None) -> 
         if native_analysis:
             analysis_dict["native_language_long_form"] = native_analysis
         payload = {
-            "uuid": card["id"],
+            "uuid": card.get("uuid", card.get("id")),  # Use uuid if available, fallback to id
             "analysis": analysis_dict,
             "category": card_category,
             "card_data": card
@@ -148,7 +181,8 @@ def send_discord_notification(card: Dict) -> bool:
         return False
     try:
         card_name = card['name']
-        card_url = f"{MTGABYSS_BASE_URL}/card/{card['id']}"
+        card_uuid = card.get("uuid", card.get("id"))  # Use uuid if available, fallback to id
+        card_url = f"{MTGABYSS_BASE_URL}/card/{card_uuid}"
         image_url = card.get('image_uris', {}).get('normal', '')
         embed = {
             "title": f"✨ New Analysis: {card_name}",
@@ -175,20 +209,42 @@ def send_discord_notification(card: Dict) -> bool:
 
 def main():
     print(f"""
-MTG Card Analysis Worker (Serial)
-===================================
+MTG Card Analysis Worker (Using MTGAbyss Unreviewed Cards)
+==========================================================
 Model: {LLM_MODEL}
 Database: {MONGODB_URI}
 Discord: {'✅' if DISCORD_WEBHOOK_URL else '❌'}
 MTGAbyss URL: {MTGABYSS_BASE_URL}
+Card Source: {MTGABYSS_BASE_URL}/api/get_random_unreviewed
 
+This worker will process unreviewed cards from your database.
 Press Ctrl+C to stop.
 """)
+    
+    # Check if our API is working
+    try:
+        resp = requests.get(f'{MTGABYSS_BASE_URL}/api/stats', timeout=5)
+        if resp.status_code == 200:
+            stats = resp.json().get('stats', {})
+            print(f"📊 Database Status:")
+            print(f"   Total cards: {stats.get('total_cards', 'Unknown'):,}")
+            print(f"   Reviewed: {stats.get('reviewed_cards', 'Unknown'):,}")
+            print(f"   Unreviewed: {stats.get('unreviewed_cards', 'Unknown'):,}")
+            print(f"   Progress: {stats.get('completion_percentage', 0):.1f}%")
+            print()
+        else:
+            print("⚠️  Could not fetch stats from MTGAbyss API")
+    except Exception as e:
+        print(f"⚠️  API connection test failed: {e}")
+        print("Will fallback to Scryfall random cards if needed.")
+    
+    print("Starting worker loop...\n")
     while True:
         round_start = time.time()
-        card = fetch_random_card()
+        card = fetch_random_unreviewed_card()
         if not card:
-            time.sleep(10)
+            simple_log("No unreviewed cards available, waiting 60 seconds...")
+            time.sleep(60)
             continue
 
         # First pass: generate raw analysis (English)

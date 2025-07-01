@@ -102,6 +102,117 @@ def random_card_redirect():
     return redirect(f"/card/{card['uuid']}")
 
 # Worker API endpoints
+@app.route('/api/get_random_unreviewed', methods=['GET'])
+def get_random_unreviewed():
+    """Get a random card that hasn't been analyzed yet for worker processing"""
+    try:
+        # Optional query parameters
+        lang = request.args.get('lang', 'en')  # Default to English cards
+        limit = int(request.args.get('limit', 1))  # How many cards to return
+        
+        # Build query for unreviewed cards
+        query = {
+            'analysis': {'$exists': False},  # No analysis field means unreviewed
+            'lang': lang  # Filter by language
+        }
+        
+        # Optional: filter by specific criteria
+        if request.args.get('rarity'):
+            query['rarity'] = request.args.get('rarity')
+        
+        if request.args.get('set'):
+            query['set'] = request.args.get('set')
+        
+        # Get count of unreviewed cards for progress tracking
+        total_unreviewed = cards.count_documents(query)
+        
+        # Get random unreviewed card(s)
+        pipeline = [
+            {'$match': query},
+            {'$sample': {'size': limit}}
+        ]
+        
+        unreviewed_cards = list(cards.aggregate(pipeline))
+        
+        if not unreviewed_cards:
+            return jsonify({
+                'status': 'no_cards',
+                'message': 'No unreviewed cards found matching criteria',
+                'total_unreviewed': total_unreviewed
+            }), 404
+        
+        # Return essential card data for processing
+        result_cards = []
+        for card in unreviewed_cards:
+            card_data = {
+                'uuid': card.get('uuid'),
+                'scryfall_id': card.get('scryfall_id'),
+                'name': card.get('name'),
+                'mana_cost': card.get('mana_cost', ''),
+                'type_line': card.get('type_line', ''),
+                'oracle_text': card.get('oracle_text', ''),
+                'power': card.get('power'),
+                'toughness': card.get('toughness'),
+                'cmc': card.get('cmc', 0),
+                'colors': card.get('colors', []),
+                'rarity': card.get('rarity', ''),
+                'set': card.get('set', ''),
+                'lang': card.get('lang', 'en'),
+                'image_uris': card.get('image_uris', {}),
+                'prices': card.get('prices', {})
+            }
+            # Remove None values to keep response clean
+            card_data = {k: v for k, v in card_data.items() if v is not None}
+            result_cards.append(card_data)
+        
+        return jsonify({
+            'status': 'success',
+            'cards': result_cards,
+            'total_unreviewed': total_unreviewed,
+            'returned_count': len(result_cards)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching random unreviewed card: {str(e)}")
+        return jsonify({
+            'status': 'error', 
+            'message': str(e)
+        }), 500
+
+@app.route('/api/stats', methods=['GET'])
+def api_stats():
+    """Get processing statistics for workers"""
+    try:
+        total_cards = cards.count_documents({})
+        reviewed_cards = cards.count_documents({'analysis': {'$exists': True}})
+        unreviewed_cards = total_cards - reviewed_cards
+        
+        # Get language breakdown of unreviewed cards
+        lang_pipeline = [
+            {'$match': {'analysis': {'$exists': False}}},
+            {'$group': {'_id': '$lang', 'count': {'$sum': 1}}},
+            {'$sort': {'count': -1}}
+        ]
+        unreviewed_by_lang = list(cards.aggregate(lang_pipeline))
+        
+        return jsonify({
+            'status': 'success',
+            'stats': {
+                'total_cards': total_cards,
+                'reviewed_cards': reviewed_cards,
+                'unreviewed_cards': unreviewed_cards,
+                'completion_percentage': round((reviewed_cards / total_cards * 100), 2) if total_cards > 0 else 0,
+                'unreviewed_by_language': unreviewed_by_lang
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching stats: {str(e)}")
+        return jsonify({
+            'status': 'error', 
+            'message': str(e)
+        }), 500
+
 @app.route('/api/submit_work', methods=['POST'])
 def submit_work():
     data = request.json
