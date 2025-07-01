@@ -206,10 +206,29 @@ def card_detail(uuid):
         mention_names = extract_mentions(card['analysis']['long_form'])
         if mention_names:
             # Only include cards with analysis
-            mentioned_cards = list(cards.find({
+            found_cards = list(cards.find({
                 'name': {'$in': mention_names},
                 'analysis.long_form': {'$exists': True, '$ne': ''}
             }, {'uuid': 1, 'name': 1, 'imageUris.normal': 1, 'prices': 1}))
+            # Unique by name, pick highest price (world avg) per name
+            card_by_name = {}
+            for c in found_cards:
+                name = c.get('name')
+                usd = float(c.get('prices', {}).get('usd') or 0)
+                eur = float(c.get('prices', {}).get('eur') or 0)
+                if usd and eur:
+                    avg = (usd + eur) / 2
+                elif usd:
+                    avg = usd
+                elif eur:
+                    avg = eur
+                else:
+                    avg = 0
+                c['_world_avg'] = avg
+                if name not in card_by_name or avg > card_by_name[name]['_world_avg']:
+                    card_by_name[name] = c
+            # Sort by price descending, limit to 6
+            mentioned_cards = sorted(card_by_name.values(), key=lambda x: x['_world_avg'], reverse=True)[:6]
 
     # --- Most Expensive Cards (with analysis, cached) ---
     @cache.cached(timeout=6*60*60, key_prefix='expensive_cards')
