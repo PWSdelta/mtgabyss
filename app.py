@@ -430,32 +430,48 @@ def submit_work():
         logger.error(f"Error saving analysis for {data['uuid']}: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+
+# --- SITEMAP LOGIC ---
+from math import ceil
+
+SITEMAP_CARD_CHUNK = 50000
+
 @app.route('/sitemap.xml', methods=['GET'])
-def sitemap():
-    pages = []
+def sitemap_index():
+    """Sitemap index referencing all card sitemaps and static sitemap"""
+    # Count total cards
+    total_cards = cards.count_documents({})
+    num_card_sitemaps = ceil(total_cards / SITEMAP_CARD_CHUNK)
+    sitemap_urls = []
+    # Add static sitemap
+    sitemap_urls.append(url_for('sitemap_static', _external=True))
+    # Add card sitemaps
+    for i in range(1, num_card_sitemaps + 1):
+        sitemap_urls.append(url_for('sitemap_cards', n=i, _external=True))
+    return Response(render_template('sitemap_index.xml', sitemap_urls=sitemap_urls), mimetype='application/xml')
+
+@app.route('/sitemap-static.xml', methods=['GET'])
+def sitemap_static():
+    """Sitemap for static and non-card pages"""
     ten_days_ago = (datetime.now()).date().isoformat()
-    pages.append({
-        'loc': url_for('search', _external=True),
-        'lastmod': ten_days_ago
-    })
-    pages.append({
-        'loc': url_for('random_card_redirect', _external=True),
-        'lastmod': ten_days_ago
-    })
-    pages.append({
-        'loc': url_for('gallery', _external=True),
-        'lastmod': ten_days_ago
-    })
+    pages = [
+        {'loc': url_for('search', _external=True), 'lastmod': ten_days_ago},
+        {'loc': url_for('random_card_redirect', _external=True), 'lastmod': ten_days_ago},
+        {'loc': url_for('gallery', _external=True), 'lastmod': ten_days_ago},
+    ]
+    return Response(render_template('sitemap_static.xml', pages=pages), mimetype='application/xml')
 
-    # Use your MongoDB collection directly
-    for card in cards.find({}, {'uuid': 1}):
-        pages.append({
-            'loc': url_for('card_detail', uuid=card['uuid'], _external=True),
-            'lastmod': ten_days_ago
-        })
-
-    sitemap_xml = render_template('sitemap.xml', pages=pages)
-    return Response(sitemap_xml, mimetype='application/xml')
+@app.route('/sitemap-cards-<int:n>.xml', methods=['GET'])
+def sitemap_cards(n):
+    """Sitemap for a chunk of card detail pages (50k per sitemap)"""
+    ten_days_ago = (datetime.now()).date().isoformat()
+    skip = (n - 1) * SITEMAP_CARD_CHUNK
+    card_cursor = cards.find({}, {'uuid': 1}).skip(skip).limit(SITEMAP_CARD_CHUNK)
+    pages = [
+        {'loc': url_for('card_detail', uuid=card['uuid'], _external=True), 'lastmod': ten_days_ago}
+        for card in card_cursor
+    ]
+    return Response(render_template('sitemap_cards.xml', pages=pages), mimetype='application/xml')
 
 if __name__ == '__main__':
     app.run(debug=True)
