@@ -399,36 +399,45 @@ def get_random_unreviewed():
             'message': str(e)
         }), 500
 
+
+# --- BATCH SUBMIT WORK ENDPOINT ---
 @app.route('/api/submit_work', methods=['POST'])
 def submit_work():
     data = request.json
-    
-    if not data or 'uuid' not in data or 'analysis' not in data:
-        return jsonify({'status': 'error', 'message': 'Missing required fields'}), 400
+    # Accept either a single dict (legacy) or a list of dicts (batch)
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return jsonify({'status': 'error', 'message': 'Invalid payload'}), 400
 
-    update_fields = {}
-    # Flatten card_data fields to top level
-    if 'card_data' in data:
-        for k, v in data['card_data'].items():
-            if k != 'id':
-                update_fields[k] = v
-    # Always save uuid and analysis at top  level
-    update_fields['uuid'] = data['uuid']
-    update_fields['analysis'] = data['analysis']
-    update_fields['has_analysis'] = True
-    update_fields['analysis.analyzed_at'] = datetime.utcnow()
-
-    try:
-        cards.update_one(
-            {'uuid': data['uuid']},
-            {'$set': update_fields},
-            upsert=True
-        )
-        logger.info(f"Saved analysis for card {data['uuid']}")
-        return jsonify({'status': 'ok'})
-    except Exception as e:
-        logger.error(f"Error saving analysis for {data['uuid']}: {str(e)}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    results = []
+    for entry in data:
+        if not entry or 'uuid' not in entry or 'analysis' not in entry:
+            results.append({'uuid': entry.get('uuid') if entry else None, 'status': 'error', 'message': 'Missing required fields'})
+            continue
+        update_fields = {}
+        # Flatten card_data fields to top level
+        if 'card_data' in entry:
+            for k, v in entry['card_data'].items():
+                if k != 'id':
+                    update_fields[k] = v
+        # Always save uuid and analysis at top level
+        update_fields['uuid'] = entry['uuid']
+        update_fields['analysis'] = entry['analysis']
+        update_fields['has_analysis'] = True
+        update_fields['analysis.analyzed_at'] = datetime.utcnow()
+        try:
+            cards.update_one(
+                {'uuid': entry['uuid']},
+                {'$set': update_fields},
+                upsert=True
+            )
+            logger.info(f"Saved analysis for card {entry['uuid']}")
+            results.append({'uuid': entry['uuid'], 'status': 'ok'})
+        except Exception as e:
+            logger.error(f"Error saving analysis for {entry['uuid']}: {str(e)}")
+            results.append({'uuid': entry['uuid'], 'status': 'error', 'message': str(e)})
+    return jsonify({'status': 'ok', 'results': results})
 
 
 # --- SITEMAP LOGIC ---
