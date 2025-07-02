@@ -159,39 +159,9 @@ def save_batch_to_database(card_analysis_batch: list) -> bool:
         simple_log(f"API batch submit error: {e}")
         return False
 
-def send_discord_notification(card: Dict) -> bool:
-    if not DISCORD_WEBHOOK_URL:
-        simple_log("No Discord webhook URL configured")
-        return False
-    try:
-        card_name = card['name']
-        card_uuid = card.get("uuid", card.get("id"))  # Use uuid if available, fallback to id
-        card_url = f"{MTGABYSS_PUBLIC_URL}/card/{card_uuid}"  # Use public URL for Discord
-        image_url = card.get('image_uris', {}).get('normal', '')
-        embed = {
-            "title": f"✨ New Analysis: {card_name}",
-            "description": f"Comprehensive analysis completed for [[{card_name}]]",
-            "url": card_url,
-            "color": 0x00FF00,
-            "fields": [
-                {"name": "Type", "value": card.get('type_line', 'Unknown'), "inline": True},
-                {"name": "Mana Cost", "value": card.get('mana_cost', 'N/A'), "inline": True},
-                {"name": "Set", "value": card.get('set_name', 'Unknown'), "inline": True}
-            ],
-            "footer": {"text": f"MTGAbyss • {datetime.now().strftime('%Y-%m-%d %H:%M')}"}
-        }
-        if image_url:
-            embed["thumbnail"] = {"url": image_url}
-        payload = {"embeds": [embed]}
-        resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-        resp.raise_for_status()
-        simple_log(f"Sent Discord notification for {card_name}")
-        return True
-    except Exception as e:
-        simple_log(f"Discord notification error: {e}")
-        return False
 
-            logger.info(f"[SimpleLog] Finished {card['name']} in {elapsed:.2f} seconds.")
+def main():
+    # Check if our API is working
     print(f"""
 MTG Card Analysis Worker (Batch Mode)
 =====================================
@@ -204,8 +174,6 @@ Card Source: {MTGABYSS_BASE_URL}/api/get_random_unreviewed
 This worker will process unreviewed cards from your database in batches.
 Press Ctrl+C to stop.
 """)
-
-    # Check if our API is working
     try:
         resp = requests.get(f'{MTGABYSS_BASE_URL}/api/stats', timeout=60)
         if resp.status_code == 200:
