@@ -1,4 +1,38 @@
+
 {% extends "base.html" %}
+
+{# --- SEO/OG/Twitter/Schema blocks for card detail pages --- #}
+{% block og_meta %}
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="{{ request.url }}">
+  <meta property="og:title" content="{{ card.name }} | MTGAbyss Card Analysis">
+  <meta property="og:description" content="{{ card.analysis.long_form[:200]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}">
+  <meta property="og:image" content="{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}">
+{% endblock %}
+{% block twitter_meta %}
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="{{ request.url }}">
+  <meta name="twitter:title" content="{{ card.name }} | MTGAbyss Card Analysis">
+  <meta name="twitter:description" content="{{ card.analysis.long_form[:200]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}">
+  <meta name="twitter:image" content="{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}">
+{% endblock %}
+{% block schema_org %}
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org/",
+    "@type": "Product",
+    "name": "{{ card.name }}",
+    "image": "{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}",
+    "description": "{{ card.analysis.long_form[:200]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}",
+    "sku": "{{ card.uuid }}",
+    "url": "{{ request.url }}",
+    "brand": {
+      "@type": "Brand",
+      "name": "Magic: The Gathering"
+    }
+  }
+  </script>
+{% endblock %}
 
 {% block title %}{{ card.name }} MTG Card Strategy{% endblock %}
 
