@@ -16,11 +16,7 @@ db = client.mtgabyss
 cards = db.cards
 # Ensure indexes for fast unreviewed card queries
 try:
-    # Index for fast lookup of unreviewed cards by language (and optionally rarity/set)
-    cards.create_index([('analysis', 1), ('lang', 1)])
-    # If you often filter by rarity or set, add compound indexes as well:
-    cards.create_index([('analysis', 1), ('lang', 1), ('rarity', 1)])
-    cards.create_index([('analysis', 1), ('lang', 1), ('set', 1)])
+    cards.create_index('has_analysis')
     # For card detail lookups
     cards.create_index('uuid', unique=True)
 except Exception as e:
@@ -121,8 +117,7 @@ def search():
         # Get and sort in Python to avoid MongoDB sort on string/NaN values
         results = list(cards.find({
             'name': {'$regex': query, '$options': 'i'},
-            'analysis': {'$exists': True},
-            'imageUris.normal': {'$exists': True}
+            'has_analysis': True,
         }).limit(30))
         import math
         def price_usd(card):
@@ -141,11 +136,7 @@ def search():
         if not _frontpage_cache['results'] or now - _frontpage_cache['timestamp'] > 3600:
             # Get 30 random English cards with analysis and normal image, then sort by prices.usd descending
             results = list(cards.aggregate([
-                {'$match': {
-                    'analysis': {'$exists': True},
-                    'imageUris.normal': {'$exists': True},
-                    'lang': 'en'
-                }},
+                {'$match': {'has_analysis': True}},
                 {'$sample': {'size': 30}}
             ]))
             # Sort in Python since $sample is used
@@ -176,8 +167,7 @@ def card_detail(uuid):
     @cache.cached(timeout=7200, key_prefix=lambda: f"recent_cards_ex_{uuid}")
     def get_recent_cards():
         return list(cards.find(
-            {'analysis': {'$exists': True}, 'uuid': {'$ne': uuid}},
-            {'uuid': 1, 'name': 1, 'imageUris.normal': 1}
+            {'has_analysis': True, 'uuid': {'$ne': uuid}}
         ).sort([('analysis.analyzed_at', -1)]).limit(5))
     recent_cards = get_recent_cards()
     # Get 6 random cards with analysis and image, not this one, for recommendations
@@ -288,7 +278,6 @@ def gallery():
     """Scrolling gallery page"""
     # Show only cards with art_crop images and a review
     reviewed_cards = cards.find({
-        'imageUris.art_crop': {'$exists': True},
         'analysis': {'$exists': True}
     }).limit(60)
     return render_template('gallery.html', cards=reviewed_cards)
@@ -297,7 +286,7 @@ def gallery():
 def random_card_redirect():
     # Only pick from reviewed cards
     cursor = cards.aggregate([
-        {'$match': {'analysis': {'$exists': True}}},
+        {'$match': {'has_analysis': True}},
         {'$sample': {'size': 1}}
     ])
     card = next(cursor, None)
@@ -312,19 +301,41 @@ def clear_cache():
     return "Cache cleared"
 
 # Worker API endpoints
+@app.route('/api/stats', methods=['GET'])
+def api_stats():
+    """Get processing statistics for workers"""
+    try:
+        total_cards = cards.count_documents({})
+        reviewed_cards = cards.count_documents({'has_analysis': True})
+        unreviewed_cards = total_cards - reviewed_cards
+        
+        return jsonify({
+            'status': 'success',
+            'stats': {
+                'total_cards': total_cards,
+                'reviewed_cards': reviewed_cards,
+                'unreviewed_cards': unreviewed_cards,
+                'completion_percentage': round((reviewed_cards / total_cards * 100), 2) if total_cards > 0 else 0            
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching stats: {str(e)}")
+        return jsonify({
+            'status': 'error', 
+            'message': str(e)
+        }), 500
+
+
 @app.route('/api/get_random_unreviewed', methods=['GET'])
 def get_random_unreviewed():
     """Get a random card that hasn't been analyzed yet for worker processing"""
     try:
         # Optional query parameters
-        lang = request.args.get('lang', 'en')  # Default to English cards
         limit = int(request.args.get('limit', 1))  # How many cards to return
         
         # Build query for unreviewed cards
-        query = {
-            'analysis': {'$exists': False},  # No analysis field means unreviewed
-            'lang': lang  # Filter by language
-        }
+        query = {'has_analysis': False}
         
         # Optional: filter by specific criteria
         if request.args.get('rarity'):
@@ -367,7 +378,6 @@ def get_random_unreviewed():
                 'colors': card.get('colors', []),
                 'rarity': card.get('rarity', ''),
                 'set': card.get('set', ''),
-                'lang': card.get('lang', 'en'),
                 'image_uris': card.get('image_uris', {}),
                 'prices': card.get('prices', {})
             }
@@ -389,40 +399,6 @@ def get_random_unreviewed():
             'message': str(e)
         }), 500
 
-@app.route('/api/stats', methods=['GET'])
-def api_stats():
-    """Get processing statistics for workers"""
-    try:
-        total_cards = cards.count_documents({})
-        reviewed_cards = cards.count_documents({'analysis': {'$exists': True}})
-        unreviewed_cards = total_cards - reviewed_cards
-        
-        # Get language breakdown of unreviewed cards
-        lang_pipeline = [
-            {'$match': {'analysis': {'$exists': False}}},
-            {'$group': {'_id': '$lang', 'count': {'$sum': 1}}},
-            {'$sort': {'count': -1}}
-        ]
-        unreviewed_by_lang = list(cards.aggregate(lang_pipeline))
-        
-        return jsonify({
-            'status': 'success',
-            'stats': {
-                'total_cards': total_cards,
-                'reviewed_cards': reviewed_cards,
-                'unreviewed_cards': unreviewed_cards,
-                'completion_percentage': round((reviewed_cards / total_cards * 100), 2) if total_cards > 0 else 0,
-                'unreviewed_by_language': unreviewed_by_lang
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Error fetching stats: {str(e)}")
-        return jsonify({
-            'status': 'error', 
-            'message': str(e)
-        }), 500
-
 @app.route('/api/submit_work', methods=['POST'])
 def submit_work():
     data = request.json
@@ -439,6 +415,8 @@ def submit_work():
     # Always save uuid and analysis at top  level
     update_fields['uuid'] = data['uuid']
     update_fields['analysis'] = data['analysis']
+    update_fields['has_analysis'] = True
+    update_fields['analysis.analyzed_at'] = datetime.utcnow()
 
     try:
         cards.update_one(
