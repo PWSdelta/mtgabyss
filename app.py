@@ -181,22 +181,9 @@ def card_detail(uuid):
     ]))
 
     # --- Cards Mentioned in This Review ---
-    def extract_mentions(text):
-        # Extract [[Card Name]] and [Card Name] (but not [B] or [/B])
-        if not text:
-            return []
-        names = set()
-        # [[Card Name]]
-        for m in re.findall(r'\[\[(.+?)\]\]', text):
-            names.add(m.strip())
-        # [Card Name] but not [B] or [/B]
-        for m in re.findall(r'\[(?!/?B\])(.*?)\]', text):
-            names.add(m.strip())
-        return list(names)
-
     mentioned_cards = []
-    if card and card.get('analysis') and card['analysis'].get('long_form'):
-        mention_names = extract_mentions(card['analysis']['long_form'])
+    if card and card.get('analysis'):
+        mention_names = extract_mentions_from_guide(card['analysis'])
         if mention_names:
             # Only include cards with analysis
             found_cards = list(cards.find({
@@ -262,6 +249,23 @@ def card_detail(uuid):
         return list(cards.aggregate(pipeline))
 
     expensive_cards = get_expensive_cards()
+    
+    # Get guide information for template (backward compatible)
+    guide_sections = None
+    guide_content = None
+    guide_meta = None
+    native_guide_sections = None
+    native_guide_content = None
+    native_guide_meta = None
+    
+    if card and card.get('analysis'):
+        # English guide
+        guide_sections, guide_content, guide_meta = get_guide_content(card['analysis'], 'en')
+        
+        # Native language guide (if available)
+        card_lang = card.get('lang', 'en')
+        if card_lang != 'en':
+            native_guide_sections, native_guide_content, native_guide_meta = get_guide_content(card['analysis'], card_lang)
 
     return render_template(
         'card.html',
@@ -270,7 +274,13 @@ def card_detail(uuid):
         recent_cards=recent_cards,
         rec_cards=rec_cards,
         mentioned_cards=mentioned_cards,
-        expensive_cards=expensive_cards
+        expensive_cards=expensive_cards,
+        guide_sections=guide_sections,
+        guide_content=guide_content,
+        guide_meta=guide_meta,
+        native_guide_sections=native_guide_sections,
+        native_guide_content=native_guide_content,
+        native_guide_meta=native_guide_meta
     )
 
 @app.route('/gallery')
@@ -425,7 +435,9 @@ def submit_work():
         update_fields['uuid'] = entry['uuid']
         update_fields['analysis'] = entry['analysis']
         update_fields['has_analysis'] = True
-        update_fields['analysis.analyzed_at'] = datetime.utcnow()
+        # Set analyzed_at inside the analysis object, not overwriting it
+        if 'analysis' in update_fields and isinstance(update_fields['analysis'], dict):
+            update_fields['analysis']['analyzed_at'] = datetime.utcnow().isoformat()
         try:
             cards.update_one(
                 {'uuid': entry['uuid']},
@@ -481,6 +493,84 @@ def sitemap_cards(n):
         for card in card_cursor
     ]
     return Response(render_template('sitemap_cards.xml', pages=pages), mimetype='application/xml')
+
+# Helper functions for backward compatibility with guide formats
+def is_sectioned_guide(analysis_data):
+    """Check if this is a new sectioned guide or old monolithic format"""
+    return (analysis_data and 
+            isinstance(analysis_data.get('sections'), dict) and
+            analysis_data.get('guide_version', '').startswith('2.'))
+
+def get_guide_content(analysis_data, language='en'):
+    """Get guide content in the appropriate format"""
+    if not analysis_data:
+        return None, None, None
+    
+    # Check if it's a sectioned guide
+    if is_sectioned_guide(analysis_data):
+        # New format: return sections, formatted content, and metadata
+        sections_key = f'{"native_language_" if language != "en" else ""}sections'
+        long_form_key = f'{"native_language_" if language != "en" else ""}long_form'
+        
+        sections = analysis_data.get(sections_key, {})
+        formatted_content = analysis_data.get(long_form_key, '')
+        
+        guide_meta = {
+            'type': 'sectioned',
+            'version': analysis_data.get('guide_version', '2.0'),
+            'section_count': len(sections),
+            'model_used': analysis_data.get('model_used', 'Unknown'),
+            'analyzed_at': analysis_data.get('analyzed_at')
+        }
+        
+        return sections, formatted_content, guide_meta
+    else:
+        # Legacy format: return as single section
+        long_form_key = f'{"native_language_" if language != "en" else ""}long_form'
+        content = analysis_data.get(long_form_key, '')
+        
+        if content:
+            # Wrap legacy content as a single section
+            legacy_sections = {
+                'legacy_content': {
+                    'title': 'Complete Guide',
+                    'content': content,
+                    'language': language
+                }
+            }
+            
+            guide_meta = {
+                'type': 'legacy',
+                'version': '1.0',
+                'section_count': 1,
+                'model_used': analysis_data.get('model_used', 'Unknown'),
+                'analyzed_at': analysis_data.get('analyzed_at')
+            }
+            
+            return legacy_sections, content, guide_meta
+        
+    return None, None, None
+
+def extract_mentions_from_guide(analysis_data, language='en'):
+    """Extract card mentions from either format of guide"""
+    sections, formatted_content, guide_meta = get_guide_content(analysis_data, language)
+    
+    if not formatted_content:
+        return []
+    
+    def extract_mentions(text):
+        if not text:
+            return []
+        names = set()
+        # [[Card Name]]
+        for m in re.findall(r'\[\[(.+?)\]\]', text):
+            names.add(m.strip())
+        # [Card Name] but not [B] or [/B]
+        for m in re.findall(r'\[(?!/?B\])(.*?)\]', text):
+            names.add(m.strip())
+        return list(names)
+    
+    return extract_mentions(formatted_content)
 
 if __name__ == '__main__':
     app.run(debug=True)
