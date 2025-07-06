@@ -714,14 +714,27 @@ def submit_work():
             try:
                 card_name = entry.get('card_data', {}).get('name') or update_fields.get('name')
                 if card_name and entry.get('analysis'):
-                    # Extract mentions from the analysis
-                    mentioned_cards = extract_mentions_from_guide(entry['analysis'], 'en')
+                    # Extract mentions from the analysis using simple method
+                    analysis_content = entry['analysis']
+                    if isinstance(analysis_content, dict):
+                        # For sectioned analysis, check all sections
+                        all_text = ""
+                        if 'sections' in analysis_content:
+                            for section_data in analysis_content['sections'].values():
+                                if isinstance(section_data, dict) and 'content' in section_data:
+                                    all_text += section_data['content'] + " "
+                        elif 'content' in analysis_content:
+                            all_text = analysis_content['content']
+                    else:
+                        # For string analysis content
+                        all_text = str(analysis_content)
+                    
+                    mentioned_cards = extract_card_mentions_simple(all_text)
                     if mentioned_cards:
                         logger.info(f"Found {len(mentioned_cards)} card mentions in {card_name}: {mentioned_cards}")
-                        # Update mentions histogram with UUID-based tracking
-                        update_mentions_histogram(mentioned_cards, card_name)
+                        update_mentions_histogram_simple(mentioned_cards, card_name)
                     else:
-                        logger.info(f"No card mentions found in {card_name}")
+                        logger.debug(f"No card mentions found in {card_name}")
             except Exception as mention_error:
                 logger.error(f"Error processing mentions for {entry['uuid']}: {mention_error}")
                 # Don't fail the whole operation if mention tracking fails
@@ -897,6 +910,18 @@ def submit_guide_component():
             'generated_at': datetime.utcnow().isoformat(),
             'model_used': data.get('model_used', 'Unknown')
         }
+        
+        # SIMPLE MENTION TRACKING: Extract and track mentions from this component
+        try:
+            mentioned_cards = extract_card_mentions_simple(component_content)
+            if mentioned_cards:
+                logger.info(f"Found {len(mentioned_cards)} mentions in {card['name']} component '{component_type}': {mentioned_cards}")
+                update_mentions_histogram_simple(mentioned_cards, card['name'])
+            else:
+                logger.debug(f"No mentions found in {card['name']} component '{component_type}'")
+        except Exception as mention_error:
+            logger.error(f"Error tracking mentions in component {component_type} for {card['name']}: {mention_error}")
+            # Don't fail the component save if mention tracking fails
         
         # Update metadata
         card['analysis']['last_updated'] = datetime.utcnow().isoformat()
@@ -1172,6 +1197,84 @@ def get_guide_content(analysis_data, language='en'):
         
     return None, None, None
 
+def extract_card_mentions_simple(text):
+    """
+    Simple, bulletproof card mention extraction from text.
+    Finds [[Card Name]] and [Card Name] patterns.
+    Returns list of unique card names.
+    """
+    if not text:
+        return []
+    
+    mentions = set()
+    
+    # Find [[Card Name]] patterns
+    for match in re.findall(r'\[\[([^\]]+)\]\]', text):
+        card_name = match.strip()
+        if card_name:
+            mentions.add(card_name)
+    
+    # Find [Card Name] patterns (but not [B] or [/B])
+    # First, remove all [[...]] patterns to avoid double-matching
+    text_without_double_brackets = re.sub(r'\[\[[^\]]+\]\]', '', text)
+    
+    for match in re.findall(r'\[([^\]]+)\]', text_without_double_brackets):
+        card_name = match.strip()
+        # Skip formatting tags like [B] and [/B] and empty strings
+        if card_name and len(card_name) > 1 and not re.match(r'^/?[BIU]$', card_name, re.IGNORECASE):
+            mentions.add(card_name)
+    
+    return list(mentions)
+
+def update_mentions_histogram_simple(mentioned_card_names, mentioning_card_name):
+    """
+    Simple, bulletproof mentions histogram update.
+    For each mentioned card name, find its UUID and increment count.
+    """
+    if not mentioned_card_names:
+        return
+    
+    current_time = datetime.utcnow()
+    
+    for card_name in mentioned_card_names:
+        # Skip self-references
+        if card_name.lower() == mentioning_card_name.lower():
+            continue
+            
+        try:
+            # Find card by name to get UUID
+            card = cards.find_one(
+                {'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, 
+                {'uuid': 1, 'name': 1}
+            )
+            
+            if not card:
+                logger.debug(f"Card '{card_name}' not found for mention tracking")
+                continue
+                
+            # Increment mention count for this UUID
+            mentions_histogram.update_one(
+                {'uuid': card['uuid']},
+                {
+                    '$inc': {'mention_count': 1},
+                    '$set': {
+                        'last_mentioned': current_time,
+                        'last_mentioned_in': mentioning_card_name,
+                        'card_name': card['name']
+                    },
+                    '$setOnInsert': {
+                        'first_mentioned': current_time,
+                        'created_at': current_time
+                    }
+                },
+                upsert=True
+            )
+            
+            logger.info(f"Incremented mentions for '{card['name']}' (mentioned in {mentioning_card_name})")
+                
+        except Exception as e:
+            logger.error(f"Error updating mentions for '{card_name}': {e}")
+
 def extract_mentions_from_guide(analysis_data, language='en'):
     """Extract card mentions from either format of guide"""
     sections, formatted_content, guide_meta = get_guide_content(analysis_data, language)
@@ -1194,61 +1297,6 @@ def extract_mentions_from_guide(analysis_data, language='en'):
         return list(names)
     
     return extract_mentions(formatted_content)
-
-def update_mentions_histogram(mentioned_card_names: list, mentioning_card_name: str):
-    """Update UUID-based mentions histogram for demand-driven work prioritization"""
-    if not mentioned_card_names:
-        return
-    
-    current_time = datetime.utcnow()
-    
-    for card_name in mentioned_card_names:
-        # Skip self-references
-        if card_name.strip().lower() == mentioning_card_name.strip().lower():
-            continue
-            
-        try:
-            # Find the card to get its UUID
-            card = cards.find_one({
-                '$or': [
-                    {'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}},
-                    {'uuid': card_name},
-                    {'scryfall_id': card_name}
-                ]
-            }, {'uuid': 1, 'name': 1})
-            
-            if not card:
-                logger.debug(f"Card '{card_name}' not found in database for histogram")
-                continue
-                
-            # Use upsert to increment mention count by UUID
-            result = mentions_histogram.update_one(
-                {'uuid': card['uuid']},
-                {
-                    '$inc': {'mention_count': 1},
-                    '$set': {
-                        'last_mentioned': current_time,
-                        'last_mentioned_in': mentioning_card_name,
-                        'card_name': card['name']  # Store name for easy reference
-                    },
-                    '$setOnInsert': {
-                        'first_mentioned': current_time,
-                        'created_at': current_time
-                    }
-                },
-                upsert=True
-            )
-            
-            if result.upserted_id:
-                logger.info(f"Started tracking UUID mentions for '{card['name']}' ({card['uuid']}) - mentioned in {mentioning_card_name}")
-            else:
-                # Get current count for logging
-                mention_doc = mentions_histogram.find_one({'uuid': card['uuid']})
-                count = mention_doc.get('mention_count', 0) if mention_doc else 0
-                logger.info(f"Updated UUID mention count for '{card['name']}': {count} mentions (latest: {mentioning_card_name})")
-                
-        except Exception as e:
-            logger.error(f"Error updating UUID mention histogram for '{card_name}': {e}")
 
 def get_card_uuid_by_name(card_name: str) -> str:
     """Get UUID for a card by name (case-insensitive)"""
