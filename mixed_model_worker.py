@@ -482,56 +482,63 @@ Style Guidelines:
                     ordered_content.append(f"## {section_title}\n\n{section_content.strip()}\n")
         return "\n".join(ordered_content)
     
-    def submit_analysis(self, payload: Dict) -> bool:
-        """Submit the completed analysis to the server"""
+    def submit_section_component(self, card_uuid: str, section_key: str, section_result: Dict, card: Dict) -> bool:
+        """Submit a single section component to the server for assembly"""
         try:
-            url = f'{MTGABYSS_BASE_URL}/api/submit_work'
-            response = requests.post(url, json=payload, timeout=120)
-            
+            url = f'{MTGABYSS_BASE_URL}/api/submit_guide_component'
+            payload = {
+                'uuid': card_uuid,
+                'section_key': section_key,
+                'section_data': section_result,
+                'card_data': card,
+                'component_type': 'section',  # Required by backend
+                'component_content': section_result.get('content', '')  # Required by backend
+            }
+            response = requests.post(url, json=payload, timeout=60)
             if response.status_code == 200:
                 result = response.json()
-                if result.get('status') == 'ok':
-                    logger.info(f"Successfully submitted analysis for {payload['uuid']}")
+                # Accept both 'ok' and 'success' as valid statuses
+                if result.get('status') in ('ok', 'success'):
+                    logger.info(f"Submitted section '{section_key}' for {card_uuid} ({result})")
                     return True
                 else:
-                    logger.error(f"Server rejected analysis: {result}")
+                    logger.error(f"Server rejected section '{section_key}': {result}")
                     return False
             else:
-                logger.error(f"Failed to submit analysis: {response.status_code} - {response.text}")
+                logger.error(f"Failed to submit section '{section_key}': {response.status_code} - {response.text}")
                 return False
-                
         except Exception as e:
-            logger.error(f"Error submitting analysis: {e}")
+            logger.error(f"Error submitting section '{section_key}': {e}")
             return False
     
     def run(self, limit: int = None):
-        """Main processing loop"""
-        logger.info("MTGAbyss Mixed-Model Worker")
+        """Main processing loop (submits each section as a component)"""
+        logger.info("MTGAbyss Mixed-Model Worker (Componentized Submission)")
         logger.info("=" * 30)
         logger.info(f"Gemini model: {self.gemini_model} ({'✅' if self.gemini_client else '❌'})")
         logger.info(f"Ollama model: {self.ollama_model} ({'✅' if self.ollama_available else '❌'})")
         logger.info(f"Rate limit: {self.rate_limit}s between sections")
-        
+
         # Show model assignments
         section_definitions = self.get_section_definitions()
         gemini_sections = [(k, v.get('model')) for k, v in section_definitions.items() if v.get('model', '').startswith('gemini')]
         ollama_sections = [(k, v.get('model')) for k, v in section_definitions.items() if not v.get('model', '').startswith('gemini')]
-        
+
         gemini_available = "✅" if self.gemini_client else "❌"
         ollama_available = "✅" if self.ollama_available else "❌"
-        
+
         if gemini_sections:
             logger.info(f"GEMINI {gemini_available}:")
             for section, model in gemini_sections:
                 logger.info(f"  {section}: {model}")
-        
+
         if ollama_sections:
             logger.info(f"OLLAMA {ollama_available}:")
             for section, model in ollama_sections:
                 logger.info(f"  {section}: {model}")
-        
+
         logger.info("Press Ctrl+C to stop.")
-        
+
         try:
             while limit is None or self.processed_count < limit:
                 # Fetch a card to process
@@ -540,30 +547,66 @@ Style Guidelines:
                     logger.info("No cards available. Waiting 30 seconds...")
                     time.sleep(30)
                     continue
-                
-                # Process the card with mixed models
-                payload = self.process_card_mixed_model(card)
-                if not payload:
-                    logger.error(f"Failed to process card {card.get('name')}")
-                    continue
-                
-                # Submit the analysis
-                if self.submit_analysis(payload):
-                    self.processed_count += 1
-                    simple_log(f"Completed {card['name']} ({self.processed_count} total)")
-                    
-                    # Send Discord notification if configured
-                    if DISCORD_WEBHOOK_URL:
-                        self.send_discord_notification(card, payload)
-                else:
-                    logger.error(f"Failed to submit analysis for {card['name']}")
-                
+
+                card_name = card.get('name', 'Unknown Card')
+                card_uuid = card.get('uuid')
+                logger.info(f"Processing card: {card_name} (UUID: {card_uuid})")
+
+                section_definitions = self.get_section_definitions()
+                failed_sections = 0
+                completed_sections = 0
+
+                # Group section keys by model provider for batching
+                model_to_sections = {'gemini': [], 'ollama': []}
+                for section_key, section_config in section_definitions.items():
+                    model_provider = self.get_model_for_section(section_key, section_config)
+                    if model_provider in model_to_sections:
+                        model_to_sections[model_provider].append(section_key)
+                    else:
+                        model_to_sections[model_provider] = [section_key]
+
+                # Batch process by model provider
+                for model_provider, section_keys in model_to_sections.items():
+                    if not section_keys:
+                        continue
+                    for section_key in section_keys:
+                        section_config = section_definitions[section_key]
+                        # Check if the required model is available
+                        if model_provider == 'gemini' and not self.gemini_client:
+                            logger.warning(f"Skipping section '{section_key}' - Gemini not available")
+                            failed_sections += 1
+                            continue
+                        elif model_provider == 'ollama' and not self.ollama_available:
+                            logger.warning(f"Skipping section '{section_key}' - Ollama not available")
+                            failed_sections += 1
+                            continue
+
+                        section_result = self.generate_section(section_key, section_config, card)
+
+                        if section_result:
+                            # Submit this section as a component
+                            if self.submit_section_component(card_uuid, section_key, section_result, card):
+                                completed_sections += 1
+                            else:
+                                failed_sections += 1
+                            time.sleep(self.rate_limit)
+                        else:
+                            failed_sections += 1
+
+                self.processed_count += 1
+                simple_log(f"Completed {card_name} ({self.processed_count} total, {completed_sections} sections, {failed_sections} failed)")
+
+                # Optionally, send Discord notification after all sections for a card
+                # (You may want to move this to the backend after full assembly)
+                # if DISCORD_WEBHOOK_URL:
+                #     self.send_discord_notification(card, payload)
+
                 # Rate limiting between cards
                 time.sleep(self.rate_limit)
-                
+
         except KeyboardInterrupt:
             logger.info("Stopping worker...")
-        
+
         simple_log(f"Processed {self.processed_count} cards total")
     
     def send_discord_notification(self, card: Dict, payload: Dict):
