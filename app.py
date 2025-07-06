@@ -15,11 +15,16 @@ app = Flask(__name__)
 client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017'))
 db = client.mtgabyss
 cards = db.cards
-# Ensure indexes for fast unreviewed card queries
+card_mentions = db.card_mentions  # New collection for tracking mention counts
+
+# Ensure indexes for fast queries
 try:
     cards.create_index('has_analysis')
-    # For card detail lookups
     cards.create_index('uuid', unique=True)
+    # New indexes for mention tracking
+    card_mentions.create_index('card_name', unique=True)
+    card_mentions.create_index('mention_count')  # For sorting by popularity
+    card_mentions.create_index([('mention_count', -1), ('last_mentioned', -1)])  # Compound index for priority
 except Exception as e:
     print(f"Could not create MongoDB indexes: {e}")
 
@@ -379,7 +384,227 @@ def get_random_unreviewed():
         }), 500
 
 
-# --- BATCH SUBMIT WORK ENDPOINT ---
+# --- PRIORITY LIST ENDPOINTS ---
+@app.route('/api/submit_priority_list', methods=['POST'])
+def submit_priority_list():
+    """Submit a list of card UUIDs to prioritize for processing"""
+    try:
+        data = request.json
+        if not data or 'uuids' not in data:
+            return jsonify({
+                'status': 'error',
+                'message': 'Missing required field: uuids (array of UUIDs)'
+            }), 400
+        
+        uuids = data['uuids']
+        if not isinstance(uuids, list):
+            return jsonify({
+                'status': 'error',
+                'message': 'uuids must be an array'
+            }), 400
+        
+        # Clean and validate UUIDs
+        valid_uuids = []
+        invalid_uuids = []
+        
+        for uuid in uuids:
+            uuid = str(uuid).strip()
+            if uuid:
+                # Check if card exists by uuid or scryfall_id
+                card = cards.find_one({'$or': [{'uuid': uuid}, {'scryfall_id': uuid}]}, {'uuid': 1, 'name': 1, 'has_full_content': 1})
+                if card:
+                    valid_uuids.append({
+                        'uuid': card.get('uuid'),  # Use the database UUID, not the input UUID
+                        'name': card.get('name', 'Unknown'),
+                        'has_analysis': card.get('has_full_content', False)
+                    })
+                else:
+                    invalid_uuids.append(uuid)
+        
+        if not valid_uuids:
+            return jsonify({
+                'status': 'error',
+                'message': 'No valid UUIDs found in the provided list',
+                'invalid_uuids': invalid_uuids
+            }), 400
+        
+        # Store priority list in a new collection
+        priority_collection = db.priority_cards
+        
+        # Clear existing priority list and add new ones
+        priority_collection.delete_many({})
+        
+        priority_docs = []
+        for i, card_info in enumerate(valid_uuids):
+            priority_docs.append({
+                'uuid': card_info['uuid'],
+                'name': card_info['name'],
+                'priority_order': i + 1,
+                'has_analysis': card_info['has_analysis'],
+                'submitted_at': datetime.utcnow(),
+                'processed': False
+            })
+        
+        if priority_docs:
+            priority_collection.insert_many(priority_docs)
+            # Create index for fast queries
+            try:
+                priority_collection.create_index('uuid', unique=True)
+                priority_collection.create_index('priority_order')
+                priority_collection.create_index('processed')
+            except Exception:
+                pass  # Indexes might already exist
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Priority list submitted with {len(valid_uuids)} valid cards',
+            'valid_cards': len(valid_uuids),
+            'invalid_uuids': invalid_uuids,
+            'cards_with_analysis': len([c for c in valid_uuids if c['has_analysis']]),
+            'cards_needing_analysis': len([c for c in valid_uuids if not c['has_analysis']])
+        })
+        
+    except Exception as e:
+        logger.error(f"Error submitting priority list: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+@app.route('/api/get_priority_work', methods=['GET'])
+def get_priority_work():
+    """Get the next card from the priority list for processing"""
+    try:
+        priority_collection = db.priority_cards
+        
+        # Find the next unprocessed card in priority order
+        priority_card = priority_collection.find_one(
+            {'processed': False},
+            sort=[('priority_order', 1)]
+        )
+        
+        if not priority_card:
+            return jsonify({
+                'status': 'no_priority_work',
+                'message': 'No cards in priority queue',
+                'total_in_queue': priority_collection.count_documents({})
+            }), 404
+        
+        # Get the full card data
+        card = cards.find_one({'uuid': priority_card['uuid']})
+        if not card:
+            # Mark as processed if card doesn't exist
+            priority_collection.update_one(
+                {'uuid': priority_card['uuid']},
+                {'$set': {'processed': True, 'processed_at': datetime.utcnow()}}
+            )
+            return jsonify({
+                'status': 'error',
+                'message': f'Priority card {priority_card["uuid"]} not found in database'
+            }), 404
+        
+        # Return card data in same format as get_random_unreviewed
+        card_data = {
+            'uuid': card.get('uuid'),
+            'scryfall_id': card.get('scryfall_id'),
+            'name': card.get('name'),
+            'mana_cost': card.get('mana_cost', ''),
+            'type_line': card.get('type_line', ''),
+            'oracle_text': card.get('oracle_text', ''),
+            'power': card.get('power'),
+            'toughness': card.get('toughness'),
+            'cmc': card.get('cmc', 0),
+            'colors': card.get('colors', []),
+            'rarity': card.get('rarity', ''),
+            'set': card.get('set', ''),
+            'image_uris': card.get('image_uris', {}),
+            'prices': card.get('prices', {})
+        }
+        # Remove None values
+        card_data = {k: v for k, v in card_data.items() if v is not None}
+        
+        # Get queue stats
+        total_in_queue = priority_collection.count_documents({})
+        remaining_in_queue = priority_collection.count_documents({'processed': False})
+        
+        return jsonify({
+            'status': 'success',
+            'cards': [card_data],
+            'returned_count': 1,
+            'priority_info': {
+                'priority_order': priority_card['priority_order'],
+                'total_in_queue': total_in_queue,
+                'remaining_in_queue': remaining_in_queue,
+                'queue_progress': f"{total_in_queue - remaining_in_queue + 1}/{total_in_queue}"
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting priority work: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+@app.route('/api/priority_status', methods=['GET'])
+def priority_status():
+    """Get status of the priority processing queue"""
+    try:
+        priority_collection = db.priority_cards
+        
+        total_in_queue = priority_collection.count_documents({})
+        processed = priority_collection.count_documents({'processed': True})
+        remaining = priority_collection.count_documents({'processed': False})
+        
+        # Get next few cards in queue
+        next_cards = list(priority_collection.find(
+            {'processed': False},
+            {'uuid': 1, 'name': 1, 'priority_order': 1},
+            sort=[('priority_order', 1)],
+            limit=5
+        ))
+        
+        # Get recently processed cards
+        recent_processed = list(priority_collection.find(
+            {'processed': True},
+            {'uuid': 1, 'name': 1, 'priority_order': 1, 'processed_at': 1},
+            sort=[('processed_at', -1)],
+            limit=5
+        ))
+        
+        return jsonify({
+            'status': 'success',
+            'queue_stats': {
+                'total_submitted': total_in_queue,
+                'processed': processed,
+                'remaining': remaining,
+                'completion_percentage': round((processed / total_in_queue * 100), 2) if total_in_queue > 0 else 0
+            },
+            'next_cards': [
+                {
+                    'uuid': card['uuid'],
+                    'name': card['name'],
+                    'priority_order': card['priority_order']
+                } for card in next_cards
+            ],
+            'recently_processed': [
+                {
+                    'uuid': card['uuid'],
+                    'name': card['name'],
+                    'priority_order': card['priority_order'],
+                    'processed_at': card.get('processed_at')
+                } for card in recent_processed
+            ]
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting priority status: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+# --- MODIFIED SUBMIT WORK TO HANDLE PRIORITY QUEUE ---
 @app.route('/api/submit_work', methods=['POST'])
 def submit_work():
     data = request.json
@@ -416,6 +641,38 @@ def submit_work():
                 upsert=True
             )
             logger.info(f"Saved analysis for card {entry['uuid']}")
+            
+            # Extract mentions and update mention counts for new analyses
+            try:
+                card_name = entry.get('card_data', {}).get('name') or update_fields.get('name')
+                if card_name and entry.get('analysis'):
+                    # Extract mentions from the analysis
+                    mentioned_cards = extract_mentions_from_guide(entry['analysis'], 'en')
+                    if mentioned_cards:
+                        logger.info(f"Found {len(mentioned_cards)} card mentions in {card_name}: {mentioned_cards}")
+                        update_mention_counts(card_name, mentioned_cards)
+                        
+                        # Immediately add mentioned cards to priority queue if they need analysis
+                        add_mentioned_cards_to_priority_queue(mentioned_cards)
+                    else:
+                        logger.info(f"No card mentions found in {card_name}")
+            except Exception as mention_error:
+                logger.error(f"Error processing mentions for {entry['uuid']}: {mention_error}")
+                # Don't fail the whole operation if mention tracking fails
+            
+            # Mark priority card as processed if it exists in priority queue
+            try:
+                priority_collection = db.priority_cards
+                priority_result = priority_collection.update_one(
+                    {'uuid': entry['uuid']},
+                    {'$set': {'processed': True, 'processed_at': datetime.utcnow()}}
+                )
+                if priority_result.matched_count > 0:
+                    logger.info(f"Marked priority card {entry['uuid']} as processed")
+            except Exception as priority_error:
+                logger.error(f"Error updating priority status for {entry['uuid']}: {priority_error}")
+                # Don't fail the whole operation if priority update fails
+            
             results.append({'uuid': entry['uuid'], 'status': 'ok'})
         except Exception as e:
             logger.error(f"Error saving analysis for {entry['uuid']}: {str(e)}")
@@ -768,8 +1025,8 @@ SITEMAP_CARD_CHUNK = 50000
 @app.route('/sitemap.xml', methods=['GET'])
 def sitemap_index():
     """Sitemap index referencing all card sitemaps and static sitemap"""
-    # Count total cards
-    total_cards = cards.count_documents({})
+    # Count only cards with full content analysis for SEO purposes
+    total_cards = cards.count_documents({'has_full_content': True})
     num_card_sitemaps = ceil(total_cards / SITEMAP_CARD_CHUNK)
     sitemap_urls = []
     # Add static sitemap
@@ -792,10 +1049,11 @@ def sitemap_static():
 
 @app.route('/sitemap-cards-<int:n>.xml', methods=['GET'])
 def sitemap_cards(n):
-    """Sitemap for a chunk of card detail pages (50k per sitemap)"""
+    """Sitemap for a chunk of card detail pages (50k per sitemap) - only cards with full analysis"""
     ten_days_ago = (datetime.now()).date().isoformat()
     skip = (n - 1) * SITEMAP_CARD_CHUNK
-    card_cursor = cards.find({}, {'uuid': 1}).skip(skip).limit(SITEMAP_CARD_CHUNK)
+    # Only include cards with full content analysis in sitemap
+    card_cursor = cards.find({'has_full_content': True}, {'uuid': 1}).skip(skip).limit(SITEMAP_CARD_CHUNK)
     pages = [
         {'loc': url_for('card_detail', uuid=card['uuid'], _external=True), 'lastmod': ten_days_ago}
         for card in card_cursor
@@ -889,6 +1147,283 @@ def extract_mentions_from_guide(analysis_data, language='en'):
         return list(names)
     
     return extract_mentions(formatted_content)
+
+def update_mention_counts(card_name: str, mentioned_cards: list):
+    """Update mention counts for cards referenced in a new analysis"""
+    if not mentioned_cards:
+        return
+    
+    current_time = datetime.utcnow()
+    
+    # Process each mentioned card
+    for mentioned_card in mentioned_cards:
+        # Skip self-references
+        if mentioned_card.strip().lower() == card_name.strip().lower():
+            continue
+            
+        try:
+            # Use upsert to increment mention count
+            result = card_mentions.update_one(
+                {'card_name': mentioned_card},
+                {
+                    '$inc': {'mention_count': 1},
+                    '$set': {
+                        'last_mentioned': current_time,
+                        'last_mentioned_in': card_name
+                    },
+                    '$setOnInsert': {
+                        'first_mentioned': current_time,
+                        'created_at': current_time
+                    }
+                },
+                upsert=True
+            )
+            
+            if result.upserted_id:
+                logger.info(f"Started tracking mentions for '{mentioned_card}' (mentioned in {card_name})")
+            else:
+                # Get current count for logging
+                mention_doc = card_mentions.find_one({'card_name': mentioned_card})
+                count = mention_doc.get('mention_count', 0) if mention_doc else 0
+                logger.info(f"Updated mention count for '{mentioned_card}': {count} mentions (latest: {card_name})")
+                
+        except Exception as e:
+            logger.error(f"Error updating mention count for '{mentioned_card}': {e}")
+
+def get_card_uuid_by_name(card_name: str) -> str:
+    """Get UUID for a card by name (case-insensitive)"""
+    # Try exact match first
+    card = cards.find_one({'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, {'uuid': 1})
+    if card:
+        return card.get('uuid')
+    
+    # Try partial match
+    card = cards.find_one({'name': {'$regex': re.escape(card_name), '$options': 'i'}}, {'uuid': 1})
+    if card:
+        return card.get('uuid')
+    
+    return None
+
+@app.route('/api/get_most_mentioned', methods=['GET'])
+def get_most_mentioned():
+    """Get cards that are frequently mentioned but don't have analysis yet"""
+    try:
+        # Optional query parameters
+        limit = int(request.args.get('limit', 1))
+        min_mentions = int(request.args.get('min_mentions', 2))  # Minimum mentions to be considered
+        
+        # Get most mentioned cards that don't have analysis yet
+        pipeline = [
+            # Join with cards collection to check analysis status
+            {
+                '$lookup': {
+                    'from': 'cards',
+                    'let': {'mention_name': '$card_name'},
+                    'pipeline': [
+                        {
+                            '$match': {
+                                '$expr': {
+                                    '$eq': [
+                                        {'$toLower': '$name'},
+                                        {'$toLower': '$$mention_name'}
+                                    ]
+                                }
+                            }
+                        }
+                    ],
+                    'as': 'card_match'
+                }
+            },
+            # Filter for cards that exist and don't have full content
+            {
+                '$match': {
+                    'mention_count': {'$gte': min_mentions},
+                    'card_match': {'$ne': []},  # Card exists
+                    'card_match.has_full_content': {'$ne': True}  # No analysis yet
+                }
+            },
+            # Sort by mention count (most mentioned first)
+            {'$sort': {'mention_count': -1, 'last_mentioned': -1}},
+            # Limit results
+            {'$limit': limit},
+            # Include the actual card data
+            {
+                '$addFields': {
+                    'card': {'$arrayElemAt': ['$card_match', 0]}
+                }
+            }
+        ]
+        
+        mentioned_cards = list(card_mentions.aggregate(pipeline))
+        
+        if not mentioned_cards:
+            return jsonify({
+                'status': 'no_cards',
+                'message': f'No cards found with {min_mentions}+ mentions that need analysis',
+                'total_mentions_tracked': card_mentions.count_documents({})
+            }), 404
+        
+        # Format response with card data
+        result_cards = []
+        for mention_doc in mentioned_cards:
+            card = mention_doc.get('card', {})
+            if not card:
+                continue
+                
+            card_data = {
+                'uuid': card.get('uuid'),
+                'scryfall_id': card.get('scryfall_id'),
+                'name': card.get('name'),
+                'mana_cost': card.get('mana_cost', ''),
+                'type_line': card.get('type_line', ''),
+                'oracle_text': card.get('oracle_text', ''),
+                'power': card.get('power'),
+                'toughness': card.get('toughness'),
+                'cmc': card.get('cmc', 0),
+                'colors': card.get('colors', []),
+                'rarity': card.get('rarity', ''),
+                'set': card.get('set', ''),
+                'image_uris': card.get('image_uris', {}),
+                'prices': card.get('prices', {}),
+                # Add mention metadata
+                'mention_count': mention_doc.get('mention_count', 0),
+                'last_mentioned': mention_doc.get('last_mentioned'),
+                'last_mentioned_in': mention_doc.get('last_mentioned_in')
+            }
+            # Remove None values
+            card_data = {k: v for k, v in card_data.items() if v is not None}
+            result_cards.append(card_data)
+        
+        # Get stats for response
+        total_tracked = card_mentions.count_documents({})
+        high_priority = card_mentions.count_documents({'mention_count': {'$gte': min_mentions}})
+        
+        return jsonify({
+            'status': 'success',
+            'cards': result_cards,
+            'returned_count': len(result_cards),
+            'mention_stats': {
+                'total_cards_tracked': total_tracked,
+                'high_priority_cards': high_priority,
+                'min_mentions_threshold': min_mentions
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching most mentioned cards: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+def add_mentioned_cards_to_priority_queue(mentioned_card_names: list):
+    """Automatically add mentioned cards to TOP of priority queue if they need analysis"""
+    if not mentioned_card_names:
+        return
+    
+    try:
+        priority_collection = db.priority_cards
+        current_time = datetime.utcnow()
+        
+        # Compact priority queue: remove duplicates and renumber
+        compact_priority_queue()
+        
+        # Get current minimum priority order (top of queue)
+        min_priority = priority_collection.find_one(
+            {}, 
+            sort=[('priority_order', 1)]
+        )
+        
+        # Start inserting at the top (lower priority_order = higher priority)
+        insert_priority = (min_priority.get('priority_order', 1) if min_priority else 1) - 1
+        
+        added_count = 0
+        
+        for card_name in mentioned_card_names:
+            # Find the card in the main cards collection
+            card = cards.find_one({
+                '$or': [
+                    {'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}},
+                    {'uuid': card_name},
+                    {'scryfall_id': card_name}
+                ]
+            }, {'uuid': 1, 'name': 1, 'has_full_content': 1})
+            
+            if not card:
+                logger.debug(f"Card '{card_name}' not found in database")
+                continue  # Card doesn't exist in database
+                
+            if card.get('has_full_content'):
+                logger.debug(f"Card '{card['name']}' already has analysis")
+                continue  # Card already has analysis
+                
+            # Check if already in priority queue
+            existing = priority_collection.find_one({'uuid': card['uuid']})
+            if existing:
+                logger.debug(f"Card '{card['name']}' already in priority queue")
+                continue  # Already in priority queue
+            
+            # Add to TOP of priority queue
+            try:
+                priority_collection.insert_one({
+                    'uuid': card['uuid'],
+                    'name': card['name'],
+                    'priority_order': insert_priority,
+                    'has_analysis': False,
+                    'submitted_at': current_time,
+                    'processed': False,
+                    'auto_added': True,  # Mark as automatically added
+                    'mentioned_in': 'auto_discovery'
+                })
+                
+                logger.info(f"Auto-added '{card['name']}' to TOP of priority queue (order {insert_priority})")
+                insert_priority -= 1  # Next card goes even higher in priority
+                added_count += 1
+                
+            except Exception as insert_error:
+                logger.error(f"Error auto-adding '{card_name}' to priority: {insert_error}")
+        
+        if added_count > 0:
+            logger.info(f"Auto-added {added_count} mentioned cards to TOP of priority queue")
+            
+    except Exception as e:
+        logger.error(f"Error in add_mentioned_cards_to_priority_queue: {e}")
+
+def compact_priority_queue():
+    """Remove duplicates and renumber priority queue for efficiency"""
+    try:
+        priority_collection = db.priority_cards
+        
+        # Get all unique cards, keeping the one with lowest priority_order (highest priority)
+        pipeline = [
+            {'$sort': {'priority_order': 1}},  # Sort by priority (lowest first)
+            {
+                '$group': {
+                    '_id': '$uuid',
+                    'doc': {'$first': '$$ROOT'}  # Keep first (highest priority) occurrence
+                }
+            },
+            {'$replaceRoot': {'newRoot': '$doc'}},
+            {'$sort': {'priority_order': 1}}
+        ]
+        
+        unique_cards = list(priority_collection.aggregate(pipeline))
+        
+        if not unique_cards:
+            return
+        
+        # Clear the collection and re-insert with sequential numbering
+        priority_collection.delete_many({})
+        
+        for i, card in enumerate(unique_cards, start=1):
+            card['priority_order'] = i
+            card.pop('_id', None)  # Remove old _id
+            priority_collection.insert_one(card)
+        
+        logger.info(f"Compacted priority queue: {len(unique_cards)} unique cards, renumbered 1-{len(unique_cards)}")
+        
+    except Exception as e:
+        logger.error(f"Error compacting priority queue: {e}")
 
 if __name__ == '__main__':
     app.run(debug=True)
