@@ -1,4 +1,3 @@
-
 {% extends "base.html" %}
 
 {# --- SEO/OG/Twitter/Schema blocks for card detail pages --- #}
@@ -6,32 +5,41 @@
   <meta property="og:type" content="article">
   <meta property="og:url" content="{{ request.url }}">
   <meta property="og:title" content="{{ card.name }} | MTGAbyss Card Analysis">
-  <meta property="og:description" content="{{ card.analysis.long_form[:200]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}">
+  <meta property="og:description" content="{{ card.analysis.long_form[:250]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}">
   <meta property="og:image" content="{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}">
 {% endblock %}
 {% block twitter_meta %}
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="{{ request.url }}">
   <meta name="twitter:title" content="{{ card.name }} | MTGAbyss Card Analysis">
-  <meta name="twitter:description" content="{{ card.analysis.long_form[:200]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}">
+  <meta name="twitter:description" content="{{ card.analysis.long_form[:250]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}">
   <meta name="twitter:image" content="{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}">
 {% endblock %}
 {% block schema_org %}
-  <script type="application/ld+json">
-  {
-    "@context": "https://schema.org/",
-    "@type": "Product",
-    "name": "{{ card.name }}",
-    "image": "{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}",
-    "description": "{{ card.analysis.long_form[:200]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}",
-    "sku": "{{ card.uuid }}",
-    "url": "{{ request.url }}",
-    "brand": {
-      "@type": "Brand",
-      "name": "Magic: The Gathering"
-    }
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org/",
+  "@type": "Product",
+  "name": "{{ card.name }}",
+  "image": "{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}",
+  "description": "{{ card.analysis.long_form[:250]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}",
+  "sku": "{{ card.uuid }}",
+  "url": "{{ request.url }}",
+  "brand": {
+    "@type": "Brand",
+    "name": "Magic: The Gathering"
   }
-  </script>
+  {% if usd_price or eur_price %},
+  "offers": {
+    "@type": "Offer",
+    "priceCurrency": "{{ 'USD' if usd_price else 'EUR' }}",
+    "price": "{{ usd_price if usd_price else eur_price }}",
+    "availability": "https://schema.org/InStock",
+    "url": "{{ request.url }}"
+  }
+  {% endif %}
+}
+</script>
 {% endblock %}
 
 {% block title %}{{ card.name }} MTG Card Strategy{% endblock %}
@@ -224,6 +232,63 @@ document.addEventListener('DOMContentLoaded', function() {
 .recent-card-popover { position: relative; display: inline-block; }
 .card-mention-image-pop { display: none; position: absolute; background: #222; border: 1px solid #888; padding: 2px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
 .recent-card-popover:hover .card-mention-image-pop { display: block; }
+
+.guide-section {
+    scroll-margin-top: 80px; /* Account for fixed navbar */
+}
+
+.section-title {
+    border-left: 4px solid #0d6efd;
+    padding-left: 12px;
+    margin-bottom: 1rem;
+}
+
+.guide-section .markdown-content {
+    line-height: 1.7;
+}
+
+.guide-section .markdown-content h3 {
+    color: #6c757d;
+    font-size: 1.1em;
+    margin-top: 1.5rem;
+    margin-bottom: 0.8rem;
+}
+
+.guide-section .markdown-content h4 {
+    color: #6c757d;
+    font-size: 1.05em;
+    margin-top: 1.2rem;
+    margin-bottom: 0.6rem;
+}
+
+/* Smooth scrolling for section navigation */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Section navigation buttons */
+.btn-outline-primary.btn-sm {
+    font-size: 0.85em;
+    padding: 0.4rem 0.8rem;
+    border-radius: 0.25rem;
+}
+
+/* Enhanced card mentions styling */
+.markdown-content a[href*="/card/"] {
+    background: linear-gradient(135deg, #0d6efd 0%, #0056b3 100%);
+    color: white;
+    text-decoration: none;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.markdown-content a[href*="/card/"]:hover {
+    background: linear-gradient(135deg, #0056b3 0%, #004085 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
 </style>
 {% endblock %}
             </div>
@@ -232,23 +297,96 @@ document.addEventListener('DOMContentLoaded', function() {
         <!-- Analysis Column -->
         <div class="col-md-8">
             {% if card.analysis %}
-                <div class="card shadow-sm mb-4">
-                    <div class="card-header bg-primary text-white">
-                        <h4 class="mb-0">Full Analysis</h4>
-                        {% if card.analysis.analyzed_at %}
-                            <small class="text-light">Generated on {{ card.analysis.analyzed_at }}</small>
+                {% if guide_meta and guide_meta.type == 'sectioned' %}
+                    <!-- New Sectioned Guide Format -->
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                            <div>
+                                <h4 class="mb-0">Complete Strategy Guide</h4>
+                                {% if guide_meta.analyzed_at %}
+                                    <small class="text-light">Generated on {{ guide_meta.analyzed_at }}</small>
+                                {% endif %}
+                            </div>
+                            <div class="text-right">
+                                <small class="text-light">
+                                    <i class="fas fa-layer-group"></i> {{ guide_meta.section_count }} sections
+                                    {% if guide_meta.model_used %} • {{ guide_meta.model_used }}{% endif %}
+                                </small>
+                            </div>
+                        </div>
+                        
+                        <!-- Section Navigation -->
+                        <div class="card-body border-bottom">
+                            <h6 class="text-muted mb-2">Quick Navigation:</h6>
+                            <div class="row">
+                                {% for section_key, section_data in guide_sections.items() %}
+                                    <div class="col-md-6 col-lg-4 mb-2">
+                                        <a href="#section-{{ section_key }}" class="btn btn-sm btn-outline-primary btn-block text-left">
+                                            {{ section_data.title }}
+                                        </a>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        
+                        <!-- Sectioned Content -->
+                        <div class="card-body">
+                            {% for section_key, section_data in guide_sections.items() %}
+                                <div id="section-{{ section_key }}" class="guide-section mb-4 {% if not loop.last %}border-bottom pb-4{% endif %}">
+                                    <h5 class="section-title text-primary mb-3">
+                                        <i class="fas fa-bookmark"></i> {{ section_data.title }}
+                                    </h5>
+                                    <div class="markdown-content">
+                                        {{ section_data.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                        
+                        <!-- Native Language Guide (if available) -->
+                        {% if native_guide_sections and native_guide_meta %}
+                            <div class="card-header bg-secondary text-white border-top">
+                                <h5 class="mb-0">
+                                    <i class="fas fa-globe"></i> Native Language Guide
+                                    <small class="text-light ml-2">({{ native_guide_meta.section_count }} sections)</small>
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                {% for section_key, section_data in native_guide_sections.items() %}
+                                    <div class="guide-section mb-4 {% if not loop.last %}border-bottom pb-4{% endif %}">
+                                        <h6 class="section-title text-secondary mb-3">{{ section_data.title }}</h6>
+                                        <div class="markdown-content">
+                                            {{ section_data.content | markdown | safe }}
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            </div>
                         {% endif %}
                     </div>
-                    <div class="card-body markdown-content">
-                        {{ card.analysis.long_form | link_card_mentions(current_card_name) | markdown | safe }}
+                    
+                {% else %}
+                    <!-- Legacy Format (Backward Compatibility) -->
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-header bg-primary text-white">
+                            <h4 class="mb-0">Full Analysis</h4>
+                            {% if card.analysis.analyzed_at %}
+                                <small class="text-light">Generated on {{ card.analysis.analyzed_at }}</small>
+                            {% endif %}
+                            {% if guide_meta %}
+                                <small class="text-light ml-2">• Legacy Format</small>
+                            {% endif %}
+                        </div>
+                        <div class="card-body markdown-content">
+                            {{ card.analysis.long_form | link_card_mentions(current_card_name) | markdown | safe }}
+                        </div>
+                        {% if card.analysis.native_language_long_form %}
+                        <div class="card-body markdown-content border-top mt-4 pt-3">
+                            <h5 class="text-secondary">Native Language Analysis</h5>
+                            {{ card.analysis.native_language_long_form | markdown | safe }}
+                        </div>
+                        {% endif %}
                     </div>
-                    {% if card.analysis.native_language_long_form %}
-                    <div class="card-body markdown-content border-top mt-4 pt-3">
-                        <h5 class="text-secondary">Native Language Analysis</h5>
-                        {{ card.analysis.native_language_long_form | markdown | safe }}
-                    </div>
-                    {% endif %}
-                </div>
+                {% endif %}
             {% else %}
                 <div class="alert alert-info mb-4">
                     <strong>Analysis not yet available for this card.</strong><br>
