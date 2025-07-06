@@ -5,14 +5,14 @@
   <meta property="og:type" content="article">
   <meta property="og:url" content="{{ request.url }}">
   <meta property="og:title" content="{{ card.name }} | MTGAbyss Card Analysis">
-  <meta property="og:description" content="{{ card.analysis.long_form[:250]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}">
+  <meta property="og:description" content="{{ card.analysis.long_form[:250]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy and analysis for ' ~ card.name }}">
   <meta property="og:image" content="{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}">
 {% endblock %}
 {% block twitter_meta %}
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="{{ request.url }}">
   <meta name="twitter:title" content="{{ card.name }} | MTGAbyss Card Analysis">
-  <meta name="twitter:description" content="{{ card.analysis.long_form[:250]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}">
+  <meta name="twitter:description" content="{{ card.analysis.long_form[:250]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy and analysis for ' ~ card.name }}">
   <meta name="twitter:image" content="{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}">
 {% endblock %}
 {% block schema_org %}
@@ -22,22 +22,14 @@
   "@type": "Product",
   "name": "{{ card.name }}",
   "image": "{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}",
-  "description": "{{ card.analysis.long_form[:250]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy, price, and analysis for ' ~ card.name }}",
+  "description": "{{ card.analysis.long_form[:250]|striptags|replace('\n', ' ') if card.analysis and card.analysis.long_form else 'Strategy and analysis for ' ~ card.name }}",
   "sku": "{{ card.uuid }}",
   "url": "{{ request.url }}",
   "brand": {
     "@type": "Brand",
     "name": "Magic: The Gathering"
   }
-  {% if usd_price or eur_price %},
-  "offers": {
-    "@type": "Offer",
-    "priceCurrency": "{{ 'USD' if usd_price else 'EUR' }}",
-    "price": "{{ usd_price if usd_price else eur_price }}",
-    "availability": "https://schema.org/InStock",
-    "url": "{{ request.url }}"
-  }
-  {% endif %}
+  
 }
 </script>
 {% endblock %}
@@ -100,36 +92,7 @@
                         <span class="ms-1">{{ card.artist }}</span>
                     </div>
                     {% endif %}
-                    <div class="mb-2">
-                        <strong>World Average Price:</strong>
-                        {% set usd = card.prices.usd|float if card.prices and card.prices.usd else None %}
-                        {% set eur = card.prices.eur|float if card.prices and card.prices.eur else None %}
-                        {% if usd is not none and eur is not none %}
-                            <span class="ms-1">${{ '%.2f' % ((usd + eur)/2) }} (avg of ${{ '%.2f' % usd }} &amp; €{{ '%.2f' % eur }})</span>
-                        {% elif usd is not none %}
-                            <span class="ms-1">${{ '%.2f' % usd }}</span>
-                        {% elif eur is not none %}
-                            <span class="ms-1">€{{ '%.2f' % eur }}</span>
-                        {% else %}
-                            <span class="ms-1">—</span>
-                        {% endif %}
-                    </div>
-                    {% if card.prices.usd_foil or card.prices.eur_foil %}
-                    <div class="mb-2">
-                        <strong>Foil Price:</strong>
-                        {% set usd_foil = card.prices.usd_foil|float if card.prices and card.prices.usd_foil else None %}
-                        {% set eur_foil = card.prices.eur_foil|float if card.prices and card.prices.eur_foil else None %}
-                        {% if usd_foil is not none and eur_foil is not none %}
-                            <span class="ms-1">${{ '%.2f' % ((usd_foil + eur_foil)/2) }} (avg of ${{ '%.2f' % usd_foil }} &amp; €{{ '%.2f' % eur_foil }})</span>
-                        {% elif usd_foil is not none %}
-                            <span class="ms-1">${{ '%.2f' % usd_foil }}</span>
-                        {% elif eur_foil is not none %}
-                            <span class="ms-1">€{{ '%.2f' % eur_foil }}</span>
-                        {% else %}
-                            <span class="ms-1">—</span>
-                        {% endif %}
-                    </div>
-                    {% endif %}
+                    <!-- Pricing removed -->
                     <div class="mb-2">
                         <strong>Collector Number:</strong>
                         <span class="ms-1">{{ card.collector_number or "—" }}</span>
@@ -454,46 +417,7 @@ html {
                 </div>
             </div>
         </div>
-        <div class="col-md-6 mb-4">
-            <div class="card shadow-sm h-100">
-                <div class="card-header bg-warning text-dark">
-                    <h5 class="mb-0">Most Expensive Cards</h5>
-                </div>
-                <div class="card-body">
-                    {% if expensive_cards and expensive_cards|length > 0 %}
-                    <div class="row row-cols-2 row-cols-md-2 g-3">
-                        {% for e in expensive_cards %}
-                        <div class="col">
-                            <a href="/card/{{ e.uuid }}" class="text-decoration-none text-dark card-maylike-popover" data-image="{{ e.imageUris.normal if e.imageUris and e.imageUris.normal else url_for('static', filename='img/cardback.png') }}">
-                                <div class="card h-100 border-0">
-                                    <img src="{{ e.imageUris.normal if e.imageUris and e.imageUris.normal else url_for('static', filename='img/cardback.png') }}" class="card-img-top rounded" alt="{{ e.name }}" style="max-height: 120px; object-fit: contain;">
-                                    <div class="card-body p-2">
-                                        <div class="fw-bold small text-center">{{ e.name }}</div>
-                                        <div class="small text-center text-muted">
-                                            {% set usd = e.prices.usd|float if e.prices and e.prices.usd else None %}
-                                            {% set eur = e.prices.eur|float if e.prices and e.prices.eur else None %}
-                                            {% if usd is not none and eur is not none %}
-                                                ${{ '%.2f' % ((usd + eur)/2) }}
-                                            {% elif usd is not none %}
-                                                ${{ '%.2f' % usd }}
-                                            {% elif eur is not none %}
-                                                €{{ '%.2f' % eur }}
-                                            {% else %}
-                                                —
-                                            {% endif %}
-                                        </div>
-                                    </div>
-                                </div>
-                            </a>
-                        </div>
-                        {% endfor %}
-                    </div>
-                    {% else %}
-                        <div class="text-muted">No expensive cards found.</div>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
+        <!-- Most Expensive Cards section removed -->
     </div>
 </div>
 {% endblock %}

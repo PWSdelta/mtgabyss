@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Config ---
-LLM_MODEL = os.getenv('LLM_MODEL', 'llama3.2:3b')
+LLM_MODEL = os.getenv('LLM_MODEL', 'llama3.1:8b')
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 MTGABYSS_BASE_URL = os.getenv('MTGABYSS_BASE_URL', 'http://localhost:5000')
@@ -54,7 +54,7 @@ def fetch_random_card_fallback() -> Optional[Dict]:
 
 
 # --- Batch fetch unreviewed cards ---
-def fetch_unreviewed_card_batch(batch_size=10) -> Optional[list]:
+def fetch_unreviewed_card_batch(batch_size=100) -> Optional[list]:
     """Fetch a batch of unreviewed cards from our MTGAbyss API instead of Scryfall"""
     try:
         api_url = f'{MTGABYSS_BASE_URL}/api/get_random_unreviewed?lang=en&limit={batch_size}'
@@ -191,7 +191,7 @@ Press Ctrl+C to stop.
         print("Will fallback to Scryfall random cards if needed.")
 
     print("Starting worker batch loop...\n")
-    BATCH_SIZE = 10
+    BATCH_SIZE = 5
     while True:
         round_start = time.time()
         cards_batch = fetch_unreviewed_card_batch(BATCH_SIZE)
@@ -280,8 +280,8 @@ Press Ctrl+C to stop.
 
         if batch_payload:
             if save_batch_to_database(batch_payload):
-                for card in cards_batch:
-                    send_discord_notification(card)
+                # for card in cards_batch:
+                #     send_discord_notification(card)
                 elapsed = time.time() - round_start
                 logger.info(f"[SimpleLog] Finished batch of {len(batch_payload)} cards in {elapsed:.2f} seconds.")
         else:
