@@ -10,21 +10,19 @@ from time import time
 # Environment variables
 MTGABYSS_PUBLIC_URL = os.getenv('MTGABYSS_PUBLIC_URL', 'https://mtgabyss.com')
 
-
 app = Flask(__name__)
 client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017'))
 db = client.mtgabyss
 cards = db.cards
-card_mentions = db.card_mentions  # New collection for tracking mention counts
+mentions_histogram = db.mentions_histogram  # UUID-based mention tracking: { uuid: count }
 
 # Ensure indexes for fast queries
 try:
     cards.create_index('has_analysis')
     cards.create_index('uuid', unique=True)
-    # New indexes for mention tracking
-    card_mentions.create_index('card_name', unique=True)
-    card_mentions.create_index('mention_count')  # For sorting by popularity
-    card_mentions.create_index([('mention_count', -1), ('last_mentioned', -1)])  # Compound index for priority
+    # UUID-based histogram indexes
+    mentions_histogram.create_index('uuid', unique=True)
+    mentions_histogram.create_index([('mention_count', -1), ('last_mentioned', -1)])  # For fast high-count lookups
 except Exception as e:
     print(f"Could not create MongoDB indexes: {e}")
 
@@ -324,60 +322,110 @@ def api_stats():
 
 @app.route('/api/get_random_unreviewed', methods=['GET'])
 def get_random_unreviewed():
-    """Get random cards for worker processing (no filtering, just random cards)"""
+    """Get cards for worker processing - prioritize by mentions, fallback to random"""
     try:
         # Optional query parameters
         limit = int(request.args.get('limit', 1))  # How many cards to return
         
-        # No filtering - just get random cards
-        query = {}  # Process any card randomly
+        # First, try to get highest mentioned cards that need work
+        most_mentioned = list(mentions_histogram.find(
+            {},  # Any mentioned card
+            sort=[('mention_count', -1), ('last_mentioned', -1)],
+            limit=limit * 3  # Get extra to filter for cards that need work
+        ))
         
-        # Get count of total cards for progress tracking
-        total_cards = cards.count_documents(query)
+        result_cards = []
         
-        # Get random card(s)
-        pipeline = [
-            {'$match': query},
-            {'$sample': {'size': limit}}
-        ]
+        # Check mentioned cards to see if they need work
+        for mention_doc in most_mentioned:
+            if len(result_cards) >= limit:
+                break
+                
+            card = cards.find_one({'uuid': mention_doc['uuid']})
+            if card:  # Card exists, add to results regardless of analysis status
+                card_data = {
+                    'uuid': card.get('uuid'),
+                    'scryfall_id': card.get('scryfall_id'),
+                    'name': card.get('name'),
+                    'mana_cost': card.get('mana_cost', ''),
+                    'type_line': card.get('type_line', ''),
+                    'oracle_text': card.get('oracle_text', ''),
+                    'power': card.get('power'),
+                    'toughness': card.get('toughness'),
+                    'cmc': card.get('cmc', 0),
+                    'colors': card.get('colors', []),
+                    'rarity': card.get('rarity', ''),
+                    'set': card.get('set', ''),
+                    'image_uris': card.get('image_uris', {}),
+                    'prices': card.get('prices', {}),
+                    'mention_count': mention_doc.get('mention_count', 0),
+                    'priority_source': 'mentions'
+                }
+                # Remove None values
+                card_data = {k: v for k, v in card_data.items() if v is not None}
+                result_cards.append(card_data)
         
-        random_cards = list(cards.aggregate(pipeline))
+        # If we don't have enough cards from mentions, fill with random cards
+        if len(result_cards) < limit:
+            remaining_needed = limit - len(result_cards)
+            existing_uuids = [card['uuid'] for card in result_cards]
+            
+            # Get random cards not already in results
+            query = {'uuid': {'$nin': existing_uuids}} if existing_uuids else {}
+            random_pipeline = [
+                {'$match': query},
+                {'$sample': {'size': remaining_needed * 2}}  # Get extra in case some are filtered
+            ]
+            
+            random_cards = list(cards.aggregate(random_pipeline))
+            
+            for card in random_cards:
+                if len(result_cards) >= limit:
+                    break
+                    
+                card_data = {
+                    'uuid': card.get('uuid'),
+                    'scryfall_id': card.get('scryfall_id'),
+                    'name': card.get('name'),
+                    'mana_cost': card.get('mana_cost', ''),
+                    'type_line': card.get('type_line', ''),
+                    'oracle_text': card.get('oracle_text', ''),
+                    'power': card.get('power'),
+                    'toughness': card.get('toughness'),
+                    'cmc': card.get('cmc', 0),
+                    'colors': card.get('colors', []),
+                    'rarity': card.get('rarity', ''),
+                    'set': card.get('set', ''),
+                    'image_uris': card.get('image_uris', {}),
+                    'prices': card.get('prices', {}),
+                    'mention_count': 0,
+                    'priority_source': 'random'
+                }
+                # Remove None values
+                card_data = {k: v for k, v in card_data.items() if v is not None}
+                result_cards.append(card_data)
         
-        if not random_cards:
+        if not result_cards:
             return jsonify({
                 'status': 'no_cards',
                 'message': 'No cards found in database',
-                'total_cards': total_cards
+                'total_cards': cards.count_documents({})
             }), 404
         
-        # Return essential card data for processing
-        result_cards = []
-        for card in random_cards:
-            card_data = {
-                'uuid': card.get('uuid'),
-                'scryfall_id': card.get('scryfall_id'),
-                'name': card.get('name'),
-                'mana_cost': card.get('mana_cost', ''),
-                'type_line': card.get('type_line', ''),
-                'oracle_text': card.get('oracle_text', ''),
-                'power': card.get('power'),
-                'toughness': card.get('toughness'),
-                'cmc': card.get('cmc', 0),
-                'colors': card.get('colors', []),
-                'rarity': card.get('rarity', ''),
-                'set': card.get('set', ''),
-                'image_uris': card.get('image_uris', {}),
-                'prices': card.get('prices', {})
-            }
-            # Remove None values to keep response clean
-            card_data = {k: v for k, v in card_data.items() if v is not None}
-            result_cards.append(card_data)
+        # Get stats for response
+        total_cards = cards.count_documents({})
+        total_mentions = mentions_histogram.count_documents({})
         
         return jsonify({
             'status': 'success',
             'cards': result_cards,
+            'returned_count': len(result_cards),
             'total_cards': total_cards,
-            'returned_count': len(result_cards)
+            'priority_stats': {
+                'from_mentions': len([c for c in result_cards if c.get('priority_source') == 'mentions']),
+                'from_random': len([c for c in result_cards if c.get('priority_source') == 'random']),
+                'total_mentioned_cards': total_mentions
+            }
         })
         
     except Exception as e:
@@ -654,10 +702,8 @@ def submit_work():
                     mentioned_cards = extract_mentions_from_guide(entry['analysis'], 'en')
                     if mentioned_cards:
                         logger.info(f"Found {len(mentioned_cards)} card mentions in {card_name}: {mentioned_cards}")
-                        update_mention_counts(card_name, mentioned_cards)
-                        
-                        # Immediately add mentioned cards to priority queue if they need analysis
-                        add_mentioned_cards_to_priority_queue(mentioned_cards)
+                        # Update mentions histogram with UUID-based tracking
+                        update_mentions_histogram(mentioned_cards, card_name)
                     else:
                         logger.info(f"No card mentions found in {card_name}")
             except Exception as mention_error:
@@ -1133,28 +1179,41 @@ def extract_mentions_from_guide(analysis_data, language='en'):
     
     return extract_mentions(formatted_content)
 
-def update_mention_counts(card_name: str, mentioned_cards: list):
-    """Update mention counts for cards referenced in a new analysis"""
-    if not mentioned_cards:
+def update_mentions_histogram(mentioned_card_names: list, mentioning_card_name: str):
+    """Update UUID-based mentions histogram for demand-driven work prioritization"""
+    if not mentioned_card_names:
         return
     
     current_time = datetime.utcnow()
     
-    # Process each mentioned card
-    for mentioned_card in mentioned_cards:
+    for card_name in mentioned_card_names:
         # Skip self-references
-        if mentioned_card.strip().lower() == card_name.strip().lower():
+        if card_name.strip().lower() == mentioning_card_name.strip().lower():
             continue
             
         try:
-            # Use upsert to increment mention count
-            result = card_mentions.update_one(
-                {'card_name': mentioned_card},
+            # Find the card to get its UUID
+            card = cards.find_one({
+                '$or': [
+                    {'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}},
+                    {'uuid': card_name},
+                    {'scryfall_id': card_name}
+                ]
+            }, {'uuid': 1, 'name': 1})
+            
+            if not card:
+                logger.debug(f"Card '{card_name}' not found in database for histogram")
+                continue
+                
+            # Use upsert to increment mention count by UUID
+            result = mentions_histogram.update_one(
+                {'uuid': card['uuid']},
                 {
                     '$inc': {'mention_count': 1},
                     '$set': {
                         'last_mentioned': current_time,
-                        'last_mentioned_in': card_name
+                        'last_mentioned_in': mentioning_card_name,
+                        'card_name': card['name']  # Store name for easy reference
                     },
                     '$setOnInsert': {
                         'first_mentioned': current_time,
@@ -1165,15 +1224,15 @@ def update_mention_counts(card_name: str, mentioned_cards: list):
             )
             
             if result.upserted_id:
-                logger.info(f"Started tracking mentions for '{mentioned_card}' (mentioned in {card_name})")
+                logger.info(f"Started tracking UUID mentions for '{card['name']}' ({card['uuid']}) - mentioned in {mentioning_card_name}")
             else:
                 # Get current count for logging
-                mention_doc = card_mentions.find_one({'card_name': mentioned_card})
+                mention_doc = mentions_histogram.find_one({'uuid': card['uuid']})
                 count = mention_doc.get('mention_count', 0) if mention_doc else 0
-                logger.info(f"Updated mention count for '{mentioned_card}': {count} mentions (latest: {card_name})")
+                logger.info(f"Updated UUID mention count for '{card['name']}': {count} mentions (latest: {mentioning_card_name})")
                 
         except Exception as e:
-            logger.error(f"Error updating mention count for '{mentioned_card}': {e}")
+            logger.error(f"Error updating UUID mention histogram for '{card_name}': {e}")
 
 def get_card_uuid_by_name(card_name: str) -> str:
     """Get UUID for a card by name (case-insensitive)"""
@@ -1191,67 +1250,33 @@ def get_card_uuid_by_name(card_name: str) -> str:
 
 @app.route('/api/get_most_mentioned', methods=['GET'])
 def get_most_mentioned():
-    """Get cards that are frequently mentioned but don't have analysis yet"""
+    """Get cards that are frequently mentioned for processing"""
     try:
         # Optional query parameters
         limit = int(request.args.get('limit', 1))
         min_mentions = int(request.args.get('min_mentions', 1))  # Minimum mentions to be considered
         
-        # Get most mentioned cards that don't have analysis yet
-        pipeline = [
-            # Join with cards collection to check analysis status
-            {
-                '$lookup': {
-                    'from': 'cards',
-                    'let': {'mention_name': '$card_name'},
-                    'pipeline': [
-                        {
-                            '$match': {
-                                '$expr': {
-                                    '$eq': [
-                                        {'$toLower': '$name'},
-                                        {'$toLower': '$$mention_name'}
-                                    ]
-                                }
-                            }
-                        }
-                    ],
-                    'as': 'card_match'
-                }
-            },
-            # Filter for cards that exist and don't have full content
-            {
-                '$match': {
-                    'mention_count': {'$gte': min_mentions},
-                    'card_match': {'$ne': []},  # Card exists
-                    'card_match.has_full_content': {'$ne': True}  # No analysis yet
-                }
-            },
-            # Sort by mention count (most mentioned first)
-            {'$sort': {'mention_count': -1, 'last_mentioned': -1}},
-            # Limit results
-            {'$limit': limit},
-            # Include the actual card data
-            {
-                '$addFields': {
-                    'card': {'$arrayElemAt': ['$card_match', 0]}
-                }
-            }
-        ]
-        
-        mentioned_cards = list(card_mentions.aggregate(pipeline))
+        # Get most mentioned cards from histogram
+        mentioned_cards = list(mentions_histogram.find(
+            {'mention_count': {'$gte': min_mentions}},
+            sort=[('mention_count', -1), ('last_mentioned', -1)],
+            limit=limit * 2  # Get extra in case some don't exist
+        ))
         
         if not mentioned_cards:
             return jsonify({
                 'status': 'no_cards',
                 'message': f'No cards found with {min_mentions}+ mentions that need analysis',
-                'total_mentions_tracked': card_mentions.count_documents({})
+                'total_mentions_tracked': mentions_histogram.count_documents({})
             }), 404
         
-        # Format response with card data
+        # Get full card data and format response
         result_cards = []
         for mention_doc in mentioned_cards:
-            card = mention_doc.get('card', {})
+            if len(result_cards) >= limit:
+                break
+                
+            card = cards.find_one({'uuid': mention_doc['uuid']})
             if not card:
                 continue
                 
@@ -1270,25 +1295,29 @@ def get_most_mentioned():
                 'set': card.get('set', ''),
                 'image_uris': card.get('image_uris', {}),
                 'prices': card.get('prices', {}),
-                # Add mention metadata
-                'mention_count': mention_doc.get('mention_count', 0),
-                'last_mentioned': mention_doc.get('last_mentioned'),
-                'last_mentioned_in': mention_doc.get('last_mentioned_in')
+                'mention_count': mention_doc.get('mention_count', 0)
             }
             # Remove None values
             card_data = {k: v for k, v in card_data.items() if v is not None}
             result_cards.append(card_data)
         
+        if not result_cards:
+            return jsonify({
+                'status': 'no_cards',
+                'message': f'No valid cards found with {min_mentions}+ mentions',
+                'total_mentions_tracked': mentions_histogram.count_documents({})
+            }), 404
+        
         # Get stats for response
-        total_tracked = card_mentions.count_documents({})
-        high_priority = card_mentions.count_documents({'mention_count': {'$gte': min_mentions}})
+        total_tracked = mentions_histogram.count_documents({})
+        high_priority = mentions_histogram.count_documents({'mention_count': {'$gte': min_mentions}})
         
         return jsonify({
             'status': 'success',
             'cards': result_cards,
             'returned_count': len(result_cards),
             'mention_stats': {
-                'total_cards_tracked': total_tracked,
+                'total_mentioned_cards': total_tracked,
                 'high_priority_cards': high_priority,
                 'min_mentions_threshold': min_mentions
             }
