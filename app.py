@@ -416,14 +416,30 @@ def get_random_unreviewed():
         total_cards = cards.count_documents({})
         total_mentions = mentions_histogram.count_documents({})
         
+        # Determine primary selection type for worker logging
+        from_mentions = len([c for c in result_cards if c.get('priority_source') == 'mentions'])
+        from_random = len([c for c in result_cards if c.get('priority_source') == 'random'])
+        
+        if from_mentions > 0:
+            selection_type = 'mentions'
+        elif from_random > 0:
+            selection_type = 'random'
+        else:
+            selection_type = 'unknown'
+        
         return jsonify({
             'status': 'success',
             'cards': result_cards,
             'returned_count': len(result_cards),
             'total_cards': total_cards,
+            'selection_info': {
+                'type': selection_type,
+                'from_mentions': from_mentions,
+                'from_random': from_random
+            },
             'priority_stats': {
-                'from_mentions': len([c for c in result_cards if c.get('priority_source') == 'mentions']),
-                'from_random': len([c for c in result_cards if c.get('priority_source') == 'random']),
+                'from_mentions': from_mentions,
+                'from_random': from_random,
                 'total_mentioned_cards': total_mentions
             }
         })

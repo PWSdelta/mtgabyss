@@ -159,75 +159,19 @@ class UnifiedWorker:
             logger.error(f"Error generating text with {self.provider}: {e}")
             return None
     
-    def fetch_most_mentioned_cards(self, limit: int) -> List[Dict]:
-        """Fetch cards that are frequently mentioned but need analysis."""
-        try:
-            url = f'{MTGABYSS_BASE_URL}/api/get_most_mentioned'
-            params = {'limit': limit, 'min_mentions': 1}  # At least 1 mention
-            response = requests.get(url, params=params, timeout=60)
-            logger.info(f"Most mentioned endpoint: {url} -> {response.status_code}")
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('status') == 'success' and data.get('cards'):
-                    mention_stats = data.get('mention_stats', {})
-                    logger.info(f"Got mentioned card: {len(data['cards'])} cards, {mention_stats.get('high_priority_cards', 0)} high priority available")
-                    return data['cards']
-            elif response.status_code == 404:
-                # No mentioned cards available
-                data = response.json()
-                logger.info(f"No mentioned cards available: {data.get('message', 'No high-priority mentions')}")
-                return []
-            else:
-                logger.warning(f"Unexpected response from mentioned cards endpoint: {response.status_code} - {response.text}")
-        except Exception as e:
-            logger.error(f"Error fetching most mentioned cards: {e}")
-        return []
-    
-    def fetch_priority_cards(self, limit: int) -> List[Dict]:
-        """Fetch cards from the priority queue first."""
-        try:
-            url = f'{MTGABYSS_BASE_URL}/api/get_priority_work'
-            response = requests.get(url, timeout=60)
-            logger.info(f"Priority endpoint: {url} -> {response.status_code}")
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('status') == 'success' and data.get('cards'):
-                    priority_info = data.get('priority_info', {})
-                    logger.info(f"Got priority card: {priority_info.get('queue_progress', 'unknown progress')}")
-                    return data['cards']
-            elif response.status_code == 404:
-                # No priority cards available
-                data = response.json()
-                logger.info(f"No priority cards available: {data.get('message', 'Empty queue')}")
-                return []
-            else:
-                logger.warning(f"Unexpected response from priority endpoint: {response.status_code} - {response.text}")
-        except Exception as e:
-            logger.error(f"Error fetching priority cards: {e}")
-        return []
-    
     def fetch_unreviewed_cards(self, limit: int) -> List[Dict]:
-        """Fetch cards for processing - priority queue first, then most mentioned, then random cards."""
-        # 1. First try to get cards from priority queue
-        priority_cards = self.fetch_priority_cards(limit)
-        if priority_cards:
-            return priority_cards
-        
-        # 2. Then try to get most mentioned cards that need analysis
-        mentioned_cards = self.fetch_most_mentioned_cards(limit)
-        if mentioned_cards:
-            return mentioned_cards
-        
-        # 3. Fall back to random cards if no priority or mentioned work
+        """Fetch cards for processing using the unified endpoint that prioritizes by mentions and falls back to random."""
         try:
             url = f'{MTGABYSS_BASE_URL}/api/get_random_unreviewed'
             params = {'limit': limit}
             response = requests.get(url, params=params, timeout=60)
-            logger.info(f"Random endpoint: {url} -> {response.status_code}")
+            logger.info(f"Unified endpoint: {url} -> {response.status_code}")
             if response.status_code == 200:
                 data = response.json()
                 if data.get('status') == 'success' and data.get('cards'):
-                    logger.info(f"Got {len(data['cards'])} random cards from endpoint")
+                    selection_info = data.get('selection_info', {})
+                    cards_type = selection_info.get('type', 'unknown')
+                    logger.info(f"Got {len(data['cards'])} cards from unified endpoint (type: {cards_type})")
                     return data['cards']
             elif response.status_code == 404:
                 # No cards available
@@ -235,10 +179,10 @@ class UnifiedWorker:
                 logger.info(f"No cards available: {data.get('message', 'Unknown reason')}")
                 return []
             else:
-                logger.warning(f"Unexpected response from {url}: {response.status_code} - {response.text}")
+                logger.warning(f"Unexpected response from unified endpoint: {response.status_code} - {response.text}")
                 return []
         except Exception as e:
-            logger.error(f"Error fetching cards: {e}")
+            logger.error(f"Error fetching cards from unified endpoint: {e}")
             return []
     
     def get_section_prompts(self, card: Dict) -> Dict[str, Dict[str, str]]:
