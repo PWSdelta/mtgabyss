@@ -62,13 +62,17 @@ def link_card_mentions(text, current_card_name=None):
         if current_card_name and card_name.strip().lower() == current_card_name.strip().lower():
             return card_name
         # Try to find the card by name (case-insensitive, exact match)
-        card = cards.find_one({'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, {'uuid': 1, 'imageUris.normal': 1})
+        card = cards.find_one({'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, {
+            'uuid': 1, 'image_uris': 1, 'imageUris': 1, 'card_faces': 1
+        })
         if not card or 'uuid' not in card:
             # Try partial match if no exact match
-            card = cards.find_one({'name': {'$regex': re.escape(card_name), '$options': 'i'}}, {'uuid': 1, 'imageUris.normal': 1})
+            card = cards.find_one({'name': {'$regex': re.escape(card_name), '$options': 'i'}}, {
+                'uuid': 1, 'image_uris': 1, 'imageUris': 1, 'card_faces': 1
+            })
         if card and 'uuid' in card:
             uuid = card['uuid']
-            image_url = card.get('imageUris', {}).get('normal')
+            image_url = get_card_image_uri(card, 'normal')
         else:
             uuid = None
             image_url = None
@@ -1018,46 +1022,25 @@ GUIDE_SECTIONS = {
 
 
 # --- SITEMAP LOGIC ---
-from math import ceil
 
-SITEMAP_CARD_CHUNK = 50000
-
+# --- SINGLE SITEMAP FOR ALL CARDS WITH FULL CONTENT ---
 @app.route('/sitemap.xml', methods=['GET'])
-def sitemap_index():
-    """Sitemap index referencing all card sitemaps and static sitemap"""
-    # Count only cards with full content analysis for SEO purposes
-    total_cards = cards.count_documents({'has_full_content': True})
-    num_card_sitemaps = ceil(total_cards / SITEMAP_CARD_CHUNK)
-    sitemap_urls = []
-    # Add static sitemap
-    sitemap_urls.append(url_for('sitemap_static', _external=True))
-    # Add card sitemaps
-    for i in range(1, num_card_sitemaps + 1):
-        sitemap_urls.append(url_for('sitemap_cards', n=i, _external=True))
-    return Response(render_template('sitemap_index.xml', sitemap_urls=sitemap_urls), mimetype='application/xml')
-
-@app.route('/sitemap-static.xml', methods=['GET'])
-def sitemap_static():
-    """Sitemap for static and non-card pages"""
+def sitemap_xml():
+    """Single sitemap for all card detail pages with full analysis and static pages."""
     ten_days_ago = (datetime.now()).date().isoformat()
-    pages = [
+    # Card detail pages
+    card_cursor = cards.find({'has_full_content': True}, {'uuid': 1})
+    card_pages = [
+        {'loc': url_for('card_detail', uuid=card['uuid'], _external=True), 'lastmod': ten_days_ago}
+        for card in card_cursor
+    ]
+    # Static pages
+    static_pages = [
         {'loc': url_for('search', _external=True), 'lastmod': ten_days_ago},
         {'loc': url_for('random_card_redirect', _external=True), 'lastmod': ten_days_ago},
         {'loc': url_for('gallery', _external=True), 'lastmod': ten_days_ago},
     ]
-    return Response(render_template('sitemap_static.xml', pages=pages), mimetype='application/xml')
-
-@app.route('/sitemap-cards-<int:n>.xml', methods=['GET'])
-def sitemap_cards(n):
-    """Sitemap for a chunk of card detail pages (50k per sitemap) - only cards with full analysis"""
-    ten_days_ago = (datetime.now()).date().isoformat()
-    skip = (n - 1) * SITEMAP_CARD_CHUNK
-    # Only include cards with full content analysis in sitemap
-    card_cursor = cards.find({'has_full_content': True}, {'uuid': 1}).skip(skip).limit(SITEMAP_CARD_CHUNK)
-    pages = [
-        {'loc': url_for('card_detail', uuid=card['uuid'], _external=True), 'lastmod': ten_days_ago}
-        for card in card_cursor
-    ]
+    pages = static_pages + card_pages
     return Response(render_template('sitemap_cards.xml', pages=pages), mimetype='application/xml')
 
 # Helper functions for backward compatibility with guide formats
@@ -1377,7 +1360,7 @@ def add_mentioned_cards_to_priority_queue(mentioned_card_names: list):
                 })
                 
                 logger.info(f"Auto-added '{card['name']}' to TOP of priority queue (order {insert_priority})")
-                insert_priority -= 1  # Next card goes even higher in priority
+                insert_priority -= 1 # Next card goes even higher in priority
                 added_count += 1
                 
             except Exception as insert_error:
@@ -1424,6 +1407,31 @@ def compact_priority_queue():
         
     except Exception as e:
         logger.error(f"Error compacting priority queue: {e}")
+
+# Helper function for dual-faced card images
+def get_card_image_uri(card, image_type='normal'):
+    """Get the correct image URI for a card, handling dual-faced cards properly."""
+    # Check if card has faces (dual-faced card)
+    if card.get('card_faces') and len(card['card_faces']) > 0:
+        # For dual-faced cards, use the first face's image
+        first_face = card['card_faces'][0]
+        if first_face.get('image_uris') and first_face['image_uris'].get(image_type):
+            return first_face['image_uris'][image_type]
+    
+    # For single-faced cards or fallback, check root level image_uris
+    if card.get('image_uris') and card['image_uris'].get(image_type):
+        return card['image_uris'][image_type]
+    
+    # Also check for imageUris (legacy field name)
+    if card.get('imageUris') and card['imageUris'].get(image_type):
+        return card['imageUris'][image_type]
+    
+    return None
+
+@app.template_filter('get_card_image')
+def get_card_image_filter(card, image_type='normal'):
+    """Template filter to get the correct image URI for a card."""
+    return get_card_image_uri(card, image_type)
 
 if __name__ == '__main__':
     app.run(debug=True)
