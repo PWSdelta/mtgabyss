@@ -315,42 +315,35 @@ def api_stats():
 
 @app.route('/api/get_random_unreviewed', methods=['GET'])
 def get_random_unreviewed():
-    """Get a random card that hasn't been analyzed yet for worker processing"""
+    """Get random cards for worker processing (no filtering, just random cards)"""
     try:
         # Optional query parameters
         limit = int(request.args.get('limit', 1))  # How many cards to return
         
-        # Build query for cards without full content analysis
-        query = {'has_full_content': {'$ne': True}}  # Cards that don't have full content yet
+        # No filtering - just get random cards
+        query = {}  # Process any card randomly
         
-        # Optional: filter by specific criteria
-        if request.args.get('rarity'):
-            query['rarity'] = request.args.get('rarity')
+        # Get count of total cards for progress tracking
+        total_cards = cards.count_documents(query)
         
-        if request.args.get('set'):
-            query['set'] = request.args.get('set')
-        
-        # Get count of unreviewed cards for progress tracking
-        total_unreviewed = cards.count_documents(query)
-        
-        # Get random unreviewed card(s)
+        # Get random card(s)
         pipeline = [
             {'$match': query},
             {'$sample': {'size': limit}}
         ]
         
-        unreviewed_cards = list(cards.aggregate(pipeline))
+        random_cards = list(cards.aggregate(pipeline))
         
-        if not unreviewed_cards:
+        if not random_cards:
             return jsonify({
                 'status': 'no_cards',
-                'message': 'No unreviewed cards found matching criteria',
-                'total_unreviewed': total_unreviewed
+                'message': 'No cards found in database',
+                'total_cards': total_cards
             }), 404
         
         # Return essential card data for processing
         result_cards = []
-        for card in unreviewed_cards:
+        for card in random_cards:
             card_data = {
                 'uuid': card.get('uuid'),
                 'scryfall_id': card.get('scryfall_id'),
@@ -374,12 +367,12 @@ def get_random_unreviewed():
         return jsonify({
             'status': 'success',
             'cards': result_cards,
-            'total_unreviewed': total_unreviewed,
+            'total_cards': total_cards,
             'returned_count': len(result_cards)
         })
         
     except Exception as e:
-        logger.error(f"Error fetching random unreviewed card: {str(e)}")
+        logger.error(f"Error fetching random card: {str(e)}")
         return jsonify({
             'status': 'error', 
             'message': str(e)

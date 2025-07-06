@@ -161,34 +161,27 @@ class UnifiedWorker:
             return None
     
     def fetch_unreviewed_cards(self, limit: int) -> List[Dict]:
-        """Fetch a single card missing has_full_content: true using available endpoints."""
-        # Try /api/get_random_unreviewed first (returns 1 card by default)
+        """Fetch cards missing has_full_content: true from the backend."""
         try:
             url = f'{MTGABYSS_BASE_URL}/api/get_random_unreviewed'
-            params = {'limit': 1}
+            params = {'limit': limit}
             response = requests.get(url, params=params, timeout=60)
+            logger.info(f"Endpoint: {url} -> {response.status_code}")
             if response.status_code == 200:
                 data = response.json()
+                logger.info(f"Response: {data}")
                 if data.get('status') == 'success' and data.get('cards'):
-                    return [data['cards'][0]]
-            # Fallback: /api/get_next_unreviewed (returns a single card)
-            url2 = f'{MTGABYSS_BASE_URL}/api/get_next_unreviewed'
-            response2 = requests.get(url2, timeout=60)
-            if response2.status_code == 200:
-                data2 = response2.json()
-                if data2.get('status') == 'success' and data2.get('card'):
-                    return [data2['card']]
-            # Fallback: /api/get_unreviewed (returns a list)
-            url3 = f'{MTGABYSS_BASE_URL}/api/get_unreviewed'
-            response3 = requests.get(url3, timeout=60)
-            if response3.status_code == 200:
-                data3 = response3.json()
-                if data3.get('status') == 'success' and data3.get('cards'):
-                    return [data3['cards'][0]] if data3['cards'] else []
-            logger.info("No unreviewed cards available from any endpoint.")
-            return []
+                    return data['cards']
+            elif response.status_code == 404:
+                # No cards available
+                data = response.json()
+                logger.info(f"No cards available: {data.get('message', 'Unknown reason')}")
+                return []
+            else:
+                logger.warning(f"Unexpected response from {url}: {response.status_code} - {response.text}")
+                return []
         except Exception as e:
-            logger.error(f"Error fetching card: {e}")
+            logger.error(f"Error fetching cards: {e}")
             return []
     
     def get_section_prompts(self, card: Dict) -> Dict[str, Dict[str, str]]:
