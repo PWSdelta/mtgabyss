@@ -14,6 +14,7 @@ from typing import Dict, Optional, List
 import google.generativeai as genai
 from pymongo import MongoClient
 from dotenv import load_dotenv
+import argparse
 load_dotenv()
 
 # --- Config ---
@@ -358,8 +359,12 @@ def send_discord_notification(card: Dict, guide_sections: Dict, processing_time:
         logger.error(f"Error sending Discord notification: {e}")
 
 def main():
+    parser = argparse.ArgumentParser(description="MTGAbyss Gemini Card Analysis Worker")
+    parser.add_argument('--limit', type=int, default=None, help='Maximum number of cards to process before exiting')
+    args = parser.parse_args()
+
     print(f"""
-MTG Card Analysis Worker - Gemini 4x3 Batched Mode
+MTG Card Analysis Worker - Gemini 4x3 Batched Mode (Sequential Card Processing)
 ==================================================
 Model: {LLM_MODEL} (Google Gemini)
 Database: {MONGODB_URI}
@@ -378,8 +383,9 @@ Card Source: {MTGABYSS_BASE_URL}/api/get_random_unreviewed
 - Smart section parsing and validation
 - Discord notifications enabled
 
-This worker will process unreviewed cards from your database in batches.
+This worker will process unreviewed cards from your database one at a time (sequentially).
 Press Ctrl+C to stop.
+--limit: {args.limit if args.limit is not None else 'unlimited'}
 """)
     
     try:
@@ -398,71 +404,72 @@ Press Ctrl+C to stop.
         print(f"⚠️  API connection test failed: {e}")
         print("Will fallback to Scryfall random cards if needed.")
 
-    print("Starting Gemini 4x3 worker batch loop...\n")
-    BATCH_SIZE = 5
+    print("Starting Gemini 4x3 worker sequential loop...\n")
+    processed_count = 0
     while True:
+        if args.limit is not None and processed_count >= args.limit:
+            print(f"Reached processing limit of {args.limit} cards. Exiting.")
+            break
         round_start = time.time()
-        cards_batch = fetch_unreviewed_card_batch(BATCH_SIZE)
-        if not cards_batch:
+        cards_batch = fetch_unreviewed_card_batch(1)  # Always fetch one card at a time
+        if not cards_batch or not cards_batch[0]:
             simple_log("No unreviewed cards available, waiting 60 seconds...")
             time.sleep(60)
             continue
 
-        batch_payload = []
-        successful_cards = 0
-        
-        for card in cards_batch:
-            card_start = time.time()
-            logger.info(f"🚀 GEMINI 4x3: Processing {card['name']} ({card.get('set_name', 'Unknown')})")
-            
-            # Generate complete sectioned guide using 4x3 batching
-            guide_sections = generate_complete_guide_batched(card)
-            if not guide_sections:
-                logger.error(f"❌ Failed to generate guide sections for {card['name']}")
-                continue
+        card = cards_batch[0]
+        card_start = time.time()
+        logger.info(f"🚀 GEMINI 4x3: Processing {card['name']} ({card.get('set_name', 'Unknown')})")
 
-            # Format the complete guide for storage
-            complete_guide = format_guide_for_display(guide_sections)
-            
-            card_elapsed = time.time() - card_start
-            logger.info(f"✅ {card['name']} completed in {card_elapsed:.1f}s ({len(complete_guide)} chars, {len(guide_sections)} sections)")
+        # Generate complete sectioned guide using 4x3 batching
+        guide_sections = generate_complete_guide_batched(card)
+        if not guide_sections:
+            logger.error(f"❌ Failed to generate guide sections for {card['name']}")
+            continue
 
-            # Add a newline between each card analysis for clarity
-            print("\n" + "="*80 + "\n")
-            print(f"Analysis for card: {card['name']}")
-            print(complete_guide)
-            print("\n" + "="*80 + "\n")
+        # Format the complete guide for storage
+        complete_guide = format_guide_for_display(guide_sections)
 
-            # Prepare payload for batch submit
-            card_category = 'mtg'
-            analysis_dict = {
-                "long_form": complete_guide,
-                "sections": guide_sections,  # Store individual sections
-                "analyzed_at": datetime.now().isoformat(),
-                "model_used": LLM_MODEL,
-                "guide_version": "2.1_gemini_4x3"
-            }
-            
-            payload = {
-                "uuid": card.get("uuid", card.get("id")),
-                "analysis": analysis_dict,
-                "category": card_category,
-                "card_data": card
-            }
-            card['imageUris'] = card.get('image_uris', {})
-            batch_payload.append(payload)
-            successful_cards += 1
+        card_elapsed = time.time() - card_start
+        logger.info(f"✅ {card['name']} completed in {card_elapsed:.1f}s ({len(complete_guide)} chars, {len(guide_sections)} sections)")
 
-            # Send Discord notification
-            send_discord_notification(card, guide_sections, card_elapsed)
+        # Add a newline between each card analysis for clarity
+        print("\n" + "="*80 + "\n")
+        print(f"Analysis for card: {card['name']}")
+        print(complete_guide)
+        print("\n" + "="*80 + "\n")
 
-        if batch_payload:
-            if save_batch_to_database(batch_payload):
-                elapsed = time.time() - round_start
-                cards_per_minute = (successful_cards / elapsed) * 60
-                logger.info(f"🚀 GEMINI 4x3 BATCH COMPLETE: {successful_cards}/{len(cards_batch)} cards in {elapsed:.1f}s ({cards_per_minute:.1f} cards/min)")
+        # Prepare payload for submit
+        card_category = 'mtg'
+        analysis_dict = {
+            "content": complete_guide,
+            "sections": guide_sections,  # Store individual sections
+            "analyzed_at": datetime.now().isoformat(),
+            "model_used": LLM_MODEL,
+            "guide_version": "2.1_gemini_4x3"
+        }
+
+        payload = {
+            "uuid": card.get("uuid", card.get("id")),
+            "analysis": analysis_dict,
+            "category": card_category,
+            "card_data": card
+        }
+        card['imageUris'] = card.get('image_uris', {})
+
+        # Log the payload for debugging
+        logger.info(f"Payload for {card['name']}: {payload}")
+
+        # Submit analysis immediately
+        if save_batch_to_database([payload]):
+            elapsed = time.time() - round_start
+            logger.info(f"🚀 GEMINI 4x3 CARD COMPLETE: {card['name']} in {elapsed:.1f}s")
+            processed_count += 1
         else:
-            simple_log("No analyses to submit for this batch.")
+            simple_log(f"Failed to submit analysis for {card['name']}")
+
+        # Send Discord notification
+        send_discord_notification(card, guide_sections, card_elapsed)
 
 if __name__ == "__main__":
     main()

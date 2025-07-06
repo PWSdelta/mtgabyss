@@ -14,6 +14,7 @@ from typing import Dict, Optional
 import ollama
 from pymongo import MongoClient
 from dotenv import load_dotenv
+import argparse
 load_dotenv()
 
 # --- Config ---
@@ -162,6 +163,10 @@ def save_batch_to_database(card_analysis_batch: list) -> bool:
 
 def main():
     # Check if our API is working
+    parser = argparse.ArgumentParser(description="MTGAbyss Card Analysis Worker")
+    parser.add_argument('--limit', type=int, default=None, help='Maximum number of cards to process before exiting')
+    args = parser.parse_args()
+
     print(f"""
 MTG Card Analysis Worker (Batch Mode)
 =====================================
@@ -173,6 +178,7 @@ Card Source: {MTGABYSS_BASE_URL}/api/get_random_unreviewed
 
 This worker will process unreviewed cards from your database in batches.
 Press Ctrl+C to stop.
+--limit: {args.limit if args.limit is not None else 'unlimited'}
 """)
     try:
         resp = requests.get(f'{MTGABYSS_BASE_URL}/api/stats', timeout=60)
@@ -192,7 +198,11 @@ Press Ctrl+C to stop.
 
     print("Starting worker batch loop...\n")
     BATCH_SIZE = 5
+    processed_count = 0
     while True:
+        if args.limit is not None and processed_count >= args.limit:
+            print(f"Reached processing limit of {args.limit} cards. Exiting.")
+            break
         round_start = time.time()
         cards_batch = fetch_unreviewed_card_batch(BATCH_SIZE)
         if not cards_batch:
@@ -202,6 +212,9 @@ Press Ctrl+C to stop.
 
         batch_payload = []
         for card in cards_batch:
+            if args.limit is not None and processed_count >= args.limit:
+                print(f"Reached processing limit of {args.limit} cards. Exiting.")
+                break
             # First pass: generate raw analysis (English)
             raw_analysis = generate_analysis(card)
             if not raw_analysis:
@@ -276,7 +289,9 @@ Press Ctrl+C to stop.
                 "card_data": card
             }
             card['imageUris'] = card.get('image_uris', {})
+            logger.info(f"Payload for card {card.get('name')}: {payload}")
             batch_payload.append(payload)
+            processed_count += 1
 
         if batch_payload:
             if save_batch_to_database(batch_payload):

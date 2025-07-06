@@ -185,10 +185,13 @@ def card_detail(uuid):
     if card and card.get('analysis'):
         mention_names = extract_mentions_from_guide(card['analysis'])
         if mention_names:
-            # Only include cards with analysis
+            # Only include cards with analysis (support both new "content" and old "long_form")
             found_cards = list(cards.find({
                 'name': {'$in': mention_names},
-                'analysis.long_form': {'$exists': True, '$ne': ''}
+                '$or': [
+                    {'analysis.content': {'$exists': True, '$ne': ''}},
+                    {'analysis.long_form': {'$exists': True, '$ne': ''}}
+                ]
             }, {'uuid': 1, 'name': 1, 'imageUris.normal': 1, 'prices': 1}))
             # Unique by name, pick highest price (world avg) per name
             card_by_name = {}
@@ -215,7 +218,10 @@ def card_detail(uuid):
     def get_expensive_cards():
         pipeline = [
             {'$match': {
-                'analysis.long_form': {'$exists': True, '$ne': ''},
+                '$or': [
+                    {'analysis.content': {'$exists': True, '$ne': ''}},
+                    {'analysis.long_form': {'$exists': True, '$ne': ''}}
+                ],
                 '$or': [
                     {'prices.usd': {'$type': 'string', '$ne': ''}},
                     {'prices.eur': {'$type': 'string', '$ne': ''}}
@@ -510,10 +516,12 @@ def get_guide_content(analysis_data, language='en'):
     if is_sectioned_guide(analysis_data):
         # New format: return sections, formatted content, and metadata
         sections_key = f'{"native_language_" if language != "en" else ""}sections'
-        long_form_key = f'{"native_language_" if language != "en" else ""}long_form'
+        content_key = f'{"native_language_" if language != "en" else ""}content'
+        # Support both new "content" and old "long_form" for backward compatibility
+        old_content_key = f'{"native_language_" if language != "en" else ""}long_form'
         
         sections = analysis_data.get(sections_key, {})
-        formatted_content = analysis_data.get(long_form_key, '')
+        formatted_content = analysis_data.get(content_key) or analysis_data.get(old_content_key, '')
         
         guide_meta = {
             'type': 'sectioned',
@@ -526,8 +534,9 @@ def get_guide_content(analysis_data, language='en'):
         return sections, formatted_content, guide_meta
     else:
         # Legacy format: return as single section
-        long_form_key = f'{"native_language_" if language != "en" else ""}long_form'
-        content = analysis_data.get(long_form_key, '')
+        content_key = f'{"native_language_" if language != "en" else ""}content'
+        old_content_key = f'{"native_language_" if language != "en" else ""}long_form'
+        content = analysis_data.get(content_key) or analysis_data.get(old_content_key, '')
         
         if content:
             # Wrap legacy content as a single section
