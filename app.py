@@ -1,5 +1,4 @@
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
-from flask_caching import Cache
 from pymongo import MongoClient
 import os
 import logging
@@ -8,9 +7,11 @@ import re
 from datetime import datetime
 from time import time
 
+# Environment variables
+MTGABYSS_PUBLIC_URL = os.getenv('MTGABYSS_PUBLIC_URL', 'https://mtgabyss.com')
+
 
 app = Flask(__name__)
-cache = Cache(app, config={'CACHE_TYPE': 'filesystem', 'CACHE_DIR': './flask_cache'})
 client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017'))
 db = client.mtgabyss
 cards = db.cards
@@ -49,28 +50,23 @@ def link_card_mentions(text, current_card_name=None):
     # Also convert {{Card Name}} to [Card Name] for linking
     text = re.sub(r'\{\{([^}]+)\}\}', r'[\1]', text)
 
-    # Per-request cache for card name lookups
-    card_cache = {}
+    # No per-request cache for card name lookups (removed)
 
     def card_link_replacer(match):
         card_name = match.group(1)
         if current_card_name and card_name.strip().lower() == current_card_name.strip().lower():
             return card_name
-        cache_key = card_name.strip().lower()
-        card_data = card_cache.get(cache_key)
-        if card_data is None:
-            # Try to find the card by name (case-insensitive, exact match)
-            card = cards.find_one({'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, {'uuid': 1, 'imageUris.normal': 1})
-            if not card or 'uuid' not in card:
-                # Try partial match if no exact match
-                card = cards.find_one({'name': {'$regex': re.escape(card_name), '$options': 'i'}}, {'uuid': 1, 'imageUris.normal': 1})
-            if card and 'uuid' in card:
-                card_data = {'uuid': card['uuid'], 'image': card.get('imageUris', {}).get('normal')}
-            else:
-                card_data = None
-            card_cache[cache_key] = card_data
-        uuid = card_data['uuid'] if card_data else None
-        image_url = card_data['image'] if card_data and 'image' in card_data else None
+        # Try to find the card by name (case-insensitive, exact match)
+        card = cards.find_one({'name': {'$regex': f'^{re.escape(card_name)}$', '$options': 'i'}}, {'uuid': 1, 'imageUris.normal': 1})
+        if not card or 'uuid' not in card:
+            # Try partial match if no exact match
+            card = cards.find_one({'name': {'$regex': re.escape(card_name), '$options': 'i'}}, {'uuid': 1, 'imageUris.normal': 1})
+        if card and 'uuid' in card:
+            uuid = card['uuid']
+            image_url = card.get('imageUris', {}).get('normal')
+        else:
+            uuid = None
+            image_url = None
         if uuid:
             url = url_for('card_detail', uuid=uuid)
             if image_url:
@@ -102,11 +98,6 @@ def link_card_mentions(text, current_card_name=None):
         text += popover_js
     return text
 
-# Simple in-memory cache for randomized homepage results
-_frontpage_cache = {
-    'results': [],
-    'timestamp': 0
-}
 
 # Web routes
 @app.route('/')
@@ -117,7 +108,7 @@ def search():
         # Get and sort in Python to avoid MongoDB sort on string/NaN values
         results = list(cards.find({
             'name': {'$regex': query, '$options': 'i'},
-            'has_analysis': True,
+            'has_full_content': True,  # Only show cards with complete analysis
         }).limit(30))
         import math
         def price_usd(card):
@@ -131,30 +122,22 @@ def search():
                 return 0
         results = sorted(results, key=price_usd, reverse=True)[:30]
     else:
-        now = time()
-        # 1 hour = 3600 seconds
-        if not _frontpage_cache['results'] or now - _frontpage_cache['timestamp'] > 3600:
-            # Get 30 random English cards with analysis and normal image, then sort by prices.usd descending
-            results = list(cards.aggregate([
-                {'$match': {'has_analysis': True}},
-                {'$sample': {'size': 30}}
-            ]))
-            # Sort in Python since $sample is used
-            import math
-            def price_usd(card):
-                val = card.get('prices', {}).get('usd')
-                try:
-                    fval = float(val)
-                    if math.isnan(fval) or math.isinf(fval):
-                        return 0
-                    return fval
-                except Exception:
+        # Get 30 random English cards with full content and normal image, then sort by prices.usd descending
+        results = list(cards.aggregate([
+            {'$match': {'has_full_content': True}},  # Only cards with complete analysis
+            {'$sample': {'size': 30}}
+        ]))
+        import math
+        def price_usd(card):
+            val = card.get('prices', {}).get('usd')
+            try:
+                fval = float(val)
+                if math.isnan(fval) or math.isinf(fval):
                     return 0
-            results = sorted(results, key=price_usd, reverse=True)[:30]
-            _frontpage_cache['results'] = results
-            _frontpage_cache['timestamp'] = now
-        else:
-            results = _frontpage_cache['results']
+                return fval
+            except Exception:
+                return 0
+        results = sorted(results, key=price_usd, reverse=True)[:30]
     return render_template('search.html', cards=results, query=query)
 
 @app.route('/card/<uuid>')
@@ -163,18 +146,15 @@ def card_detail(uuid):
     card = cards.find_one({'uuid': uuid})
     if card and 'category' not in card:
         card['category'] = 'mtg'
-    # Get 5 most recent analyzed cards (excluding this one), cached for 2 hours
-    @cache.cached(timeout=7200, key_prefix=lambda: f"recent_cards_ex_{uuid}")
-    def get_recent_cards():
-        return list(cards.find(
-            {'has_analysis': True, 'uuid': {'$ne': uuid}}
-        ).sort([('analysis.analyzed_at', -1)]).limit(5))
-    recent_cards = get_recent_cards()
-    # Get 6 random cards with analysis and image, not this one, for recommendations
+    # Get 5 most recent analyzed cards (excluding this one)
+    recent_cards = list(cards.find(
+        {'has_full_content': True, 'uuid': {'$ne': uuid}}  # Only cards with complete analysis
+    ).sort([('analysis.analyzed_at', -1)]).limit(5))
+    # Get 6 random cards with full content and image, not this one, for recommendations
     rec_cards = list(cards.aggregate([
         {'$match': {
-            'analysis': {'$exists': True},
-            'imageUris.normal': {'$exists': True},
+            'has_full_content': True,  # Only cards with complete analysis
+            'image_uris.normal': {'$exists': True},
             'uuid': {'$ne': uuid}
         }},
         {'$sample': {'size': 6}}
@@ -185,14 +165,11 @@ def card_detail(uuid):
     if card and card.get('analysis'):
         mention_names = extract_mentions_from_guide(card['analysis'])
         if mention_names:
-            # Only include cards with analysis (support both new "content" and old "long_form")
+            # Only include cards with full content analysis
             found_cards = list(cards.find({
                 'name': {'$in': mention_names},
-                '$or': [
-                    {'analysis.content': {'$exists': True, '$ne': ''}},
-                    {'analysis.long_form': {'$exists': True, '$ne': ''}}
-                ]
-            }, {'uuid': 1, 'name': 1, 'imageUris.normal': 1, 'prices': 1}))
+                'has_full_content': True  # Only cards with complete analysis
+            }, {'uuid': 1, 'name': 1, 'image_uris.normal': 1, 'prices': 1}))
             # Unique by name, pick highest price (world avg) per name
             card_by_name = {}
             for c in found_cards:
@@ -213,48 +190,41 @@ def card_detail(uuid):
             # Sort by price descending, limit to 6
             mentioned_cards = sorted(card_by_name.values(), key=lambda x: x['_world_avg'], reverse=True)[:6]
 
-    # --- Most Expensive Cards (with analysis, cached) ---
-    @cache.cached(timeout=6*60*60, key_prefix='expensive_cards')
-    def get_expensive_cards():
-        pipeline = [
-            {'$match': {
-                '$or': [
-                    {'analysis.content': {'$exists': True, '$ne': ''}},
-                    {'analysis.long_form': {'$exists': True, '$ne': ''}}
-                ],
-                '$or': [
-                    {'prices.usd': {'$type': 'string', '$ne': ''}},
-                    {'prices.eur': {'$type': 'string', '$ne': ''}}
-                ]
-            }},
-            {'$addFields': {
-                'world_avg': {
-                    '$cond': [
-                        {'$and': [
-                            {'$ifNull': ['$prices.usd', False]},
-                            {'$ifNull': ['$prices.eur', False]}
-                        ]},
-                        {'$divide': [
-                            {'$add': [
-                                {'$toDouble': '$prices.usd'},
-                                {'$toDouble': '$prices.eur'}
-                            ]}, 2
-                        ]},
-                        {'$cond': [
-                            {'$ifNull': ['$prices.usd', False]},
+    # --- Most Expensive Cards (with full content analysis) ---
+    pipeline = [
+        {'$match': {
+            'has_full_content': True,  # Only cards with complete analysis
+            '$or': [
+                {'prices.usd': {'$type': 'string', '$ne': ''}},
+                {'prices.eur': {'$type': 'string', '$ne': ''}}
+            ]
+        }},
+        {'$addFields': {
+            'world_avg': {
+                '$cond': [
+                    {'$and': [
+                        {'$ifNull': ['$prices.usd', False]},
+                        {'$ifNull': ['$prices.eur', False]}
+                    ]},
+                    {'$divide': [
+                        {'$add': [
                             {'$toDouble': '$prices.usd'},
                             {'$toDouble': '$prices.eur'}
-                        ]}
-                    ]
-                }
-            }},
-            {'$sort': {'world_avg': -1}},
-            {'$limit': 6},
-            {'$project': {'uuid': 1, 'name': 1, 'imageUris.normal': 1, 'prices': 1}}
-        ]
-        return list(cards.aggregate(pipeline))
-
-    expensive_cards = get_expensive_cards()
+                        ]}, 2
+                    ]},
+                    {'$cond': [
+                        {'$ifNull': ['$prices.usd', False]},
+                        {'$toDouble': '$prices.usd'},
+                        {'$toDouble': '$prices.eur'}
+                    ]}
+                ]
+            }
+        }},
+        {'$sort': {'world_avg': -1}},
+        {'$limit': 6},
+        {'$project': {'uuid': 1, 'name': 1, 'imageUris.normal': 1, 'prices': 1}}
+    ]
+    expensive_cards = list(cards.aggregate(pipeline))
     
     # Get guide information for template (backward compatible)
     guide_sections = None
@@ -292,37 +262,36 @@ def card_detail(uuid):
 @app.route('/gallery')
 def gallery():
     """Scrolling gallery page"""
-    # Show only cards with art_crop images and a review
+    # Show only cards with full content analysis and art_crop images
     reviewed_cards = cards.find({
-        'analysis': {'$exists': True}
+        'has_full_content': True
     }).limit(60)
     return render_template('gallery.html', cards=reviewed_cards)
 
 @app.route('/random')
 def random_card_redirect():
-    # Only pick from reviewed cards
+    # Only pick from cards with full content analysis
     cursor = cards.aggregate([
-        {'$match': {'has_analysis': True}},
+        {'$match': {'has_full_content': True}},
         {'$sample': {'size': 1}}
     ])
     card = next(cursor, None)
     if not card:
-        return "No reviewed cards found", 404
+        return "No cards with full content found", 404
     return redirect(f"/card/{card['uuid']}")
 
-@app.route('/clear_cache')
-def clear_cache():
-    _frontpage_cache['results'] = []
-    _frontpage_cache['timestamp'] = 0
-    return "Cache cleared"
 
 # Worker API endpoints
 @app.route('/api/stats', methods=['GET'])
 def api_stats():
-    """Get processing statistics for workers"""
+    """Get processing statistics for workers (English cards only)"""
     try:
-        total_cards = cards.count_documents({})
-        reviewed_cards = cards.count_documents({'has_analysis': True})
+        # Only count English cards to avoid duplicate language versions
+        total_cards = cards.count_documents({'lang': 'en'})
+        # Count cards with full content analysis
+        reviewed_cards = cards.count_documents({'lang': 'en', 'has_full_content': True})
+        # Also count legacy has_analysis for comparison
+        legacy_reviewed = cards.count_documents({'lang': 'en', 'has_analysis': True})
         unreviewed_cards = total_cards - reviewed_cards
         
         return jsonify({
@@ -330,6 +299,7 @@ def api_stats():
             'stats': {
                 'total_cards': total_cards,
                 'reviewed_cards': reviewed_cards,
+                'legacy_reviewed_cards': legacy_reviewed,  # For comparison/migration tracking
                 'unreviewed_cards': unreviewed_cards,
                 'completion_percentage': round((reviewed_cards / total_cards * 100), 2) if total_cards > 0 else 0            
             }
@@ -350,8 +320,8 @@ def get_random_unreviewed():
         # Optional query parameters
         limit = int(request.args.get('limit', 1))  # How many cards to return
         
-        # Build query for unreviewed cards
-        query = {'has_analysis': False}
+        # Build query for cards without full content analysis
+        query = {'has_full_content': {'$ne': True}}  # Cards that don't have full content yet
         
         # Optional: filter by specific criteria
         if request.args.get('rarity'):
@@ -440,7 +410,9 @@ def submit_work():
         # Always save uuid and analysis at top level
         update_fields['uuid'] = entry['uuid']
         update_fields['analysis'] = entry['analysis']
-        update_fields['has_analysis'] = True
+        # Set has_full_content if provided by worker
+        if entry.get('has_full_content') is True:
+            update_fields['has_full_content'] = True
         # Set analyzed_at inside the analysis object, not overwriting it
         if 'analysis' in update_fields and isinstance(update_fields['analysis'], dict):
             update_fields['analysis']['analyzed_at'] = datetime.utcnow().isoformat()
@@ -456,6 +428,343 @@ def submit_work():
             logger.error(f"Error saving analysis for {entry['uuid']}: {str(e)}")
             results.append({'uuid': entry['uuid'], 'status': 'error', 'message': str(e)})
     return jsonify({'status': 'ok', 'results': results})
+
+
+# --- COMPONENTIZED CONTENT GENERATION API ---
+
+@app.route('/api/fetch_guide_component', methods=['GET'])
+def fetch_guide_component():
+    """
+    Fetch the next guide component that needs to be generated for any MTG card.
+    Returns component metadata for workers to generate content.
+    """
+    try:
+        # Find English cards that need complete analysis or are missing specific components
+        card_needing_work = cards.find_one({
+            'lang': 'en',  # Only work on English cards to avoid duplicates
+            '$or': [
+                # Cards with no analysis at all
+                {'has_analysis': {'$ne': True}},
+                # Cards with partial analysis (missing sections)
+                {
+                    'analysis.sections': {'$exists': True},
+                    '$expr': {
+                        '$lt': [
+                            {'$size': {'$objectToArray': '$analysis.sections'}},
+                            12  # Total number of guide sections
+                        ]
+                    }
+                }
+            ]
+        })
+        
+        if not card_needing_work:
+            return jsonify({
+                'status': 'no_work',
+                'message': 'No components need generation at this time'
+            }), 204
+        
+        # Determine which component is needed
+        existing_sections = set()
+        if card_needing_work.get('analysis', {}).get('sections'):
+            existing_sections = set(card_needing_work['analysis']['sections'].keys())
+        
+        # Find the first missing section from our guide structure
+        missing_section = None
+        for section_key in GUIDE_SECTIONS.keys():
+            if section_key not in existing_sections:
+                missing_section = section_key
+                break
+        
+        if not missing_section:
+            # All sections exist, check if we need to regenerate content
+            if not card_needing_work.get('analysis', {}).get('content'):
+                missing_section = 'content_assembly'
+        
+        if not missing_section:
+            return jsonify({
+                'status': 'no_work',
+                'message': 'Card analysis is complete'
+            }), 204
+        
+        # Return component work specification
+        component_spec = {
+            'status': 'work_available',
+            'destination': {
+                'uuid': card_needing_work['uuid'],
+                'name': card_needing_work['name'],
+                'type': 'mtg_card'
+            },
+            'component': {
+                'type': missing_section,
+                'title': GUIDE_SECTIONS.get(missing_section, {}).get('title', missing_section),
+                'prompt_template': GUIDE_SECTIONS.get(missing_section, {}).get('prompt', ''),
+                'language': 'en'  # Default to English, could be parameterized
+            },
+            'context': {
+                'card_data': {
+                    'uuid': card_needing_work.get('uuid'),
+                    'name': card_needing_work.get('name'),
+                    'mana_cost': card_needing_work.get('manaCost', ''),
+                    'type_line': card_needing_work.get('typeLine', ''),
+                    'oracle_text': card_needing_work.get('text', ''),
+                    'power': card_needing_work.get('power', ''),
+                    'toughness': card_needing_work.get('toughness', ''),
+                    'set_name': card_needing_work.get('setName', ''),
+                    'rarity': card_needing_work.get('rarity', '')
+                },
+                'existing_sections': list(existing_sections),
+                'total_sections_needed': len(GUIDE_SECTIONS)
+            }
+        }
+        
+        logger.info(f"Provided component work: {missing_section} for card {card_needing_work['name']}")
+        return jsonify(component_spec)
+        
+    except Exception as e:
+        logger.error(f"Error in fetch_destination_component: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Server error: {str(e)}'
+        }), 500
+
+@app.route('/api/submit_guide_component', methods=['POST'])
+def submit_guide_component():
+    """
+    Submit a single generated guide component for an MTG card.
+    Assembles and updates the complete content server-side.
+    """
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No data provided'}), 400
+        
+        # Validate required fields
+        required_fields = ['uuid', 'component_type', 'component_content']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({
+                    'status': 'error', 
+                    'message': f'Missing required field: {field}'
+                }), 400
+        
+        uuid = data['uuid']
+        component_type = data['component_type']
+        component_content = data['component_content']
+        component_title = data.get('component_title', component_type.replace('_', ' ').title())
+        
+        # Find the existing card
+        card = cards.find_one({'uuid': uuid})
+        if not card:
+            return jsonify({
+                'status': 'error',
+                'message': f'Card with UUID {uuid} not found'
+            }), 404
+        
+        # Initialize analysis structure if it doesn't exist
+        if 'analysis' not in card:
+            card['analysis'] = {
+                'sections': {},
+                'analyzed_at': datetime.utcnow().isoformat(),
+                'model_used': data.get('model_used', 'Unknown'),
+                'guide_version': '2.1_gemini_componentized'
+            }
+        
+        # Add the new component to sections
+        if 'sections' not in card['analysis']:
+            card['analysis']['sections'] = {}
+        
+        card['analysis']['sections'][component_type] = {
+            'title': component_title,
+            'content': component_content,
+            'language': data.get('language', 'en'),
+            'generated_at': datetime.utcnow().isoformat(),
+            'model_used': data.get('model_used', 'Unknown')
+        }
+        
+        # Update metadata
+        card['analysis']['last_updated'] = datetime.utcnow().isoformat()
+        if data.get('model_used'):
+            card['analysis']['model_used'] = data['model_used']
+        
+        # Check if we have all sections and can assemble complete content
+        existing_sections = set(card['analysis']['sections'].keys())
+        all_sections = set(GUIDE_SECTIONS.keys())
+        
+        if existing_sections >= all_sections:
+            # Assemble complete formatted content
+            formatted_content = format_guide_for_display(card['analysis']['sections'])
+            card['analysis']['content'] = formatted_content
+            card['analysis']['status'] = 'complete'
+            logger.info(f"Complete analysis assembled for {card['name']} ({len(formatted_content)} chars)")
+        else:
+            missing_count = len(all_sections - existing_sections)
+            card['analysis']['status'] = f'partial ({len(existing_sections)}/{len(all_sections)} sections)'
+            logger.info(f"Partial analysis updated for {card['name']} ({missing_count} sections remaining)")
+        
+        # Save to database
+        cards.update_one(
+            {'uuid': uuid},
+            {
+                '$set': {
+                    'analysis': card['analysis'],
+                    'has_analysis': len(existing_sections) > 0,
+                    'last_updated': datetime.utcnow().isoformat()
+                }
+            }
+        )
+        
+        response_data = {
+            'status': 'success',
+            'uuid': uuid,
+            'component_type': component_type,
+            'sections_complete': len(existing_sections),
+            'sections_total': len(all_sections),
+            'analysis_status': card['analysis']['status']
+        }
+        
+        # If analysis is complete, include the URL
+        if card['analysis'].get('status') == 'complete':
+            response_data['card_url'] = f"{MTGABYSS_PUBLIC_URL}/card/{uuid}"
+        
+        logger.info(f"Component {component_type} submitted for {card['name']}")
+        return jsonify(response_data)
+        
+    except Exception as e:
+        logger.error(f"Error in submit_destination_component: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Server error: {str(e)}'
+        }), 500
+
+@app.route('/api/guide_status/<uuid>', methods=['GET'])
+def guide_status(uuid):
+    """
+    Get the current status of guide generation for an MTG card.
+    Useful for monitoring progress and determining next steps.
+    """
+    try:
+        card = cards.find_one({'uuid': uuid})
+        if not card:
+            return jsonify({
+                'status': 'error',
+                'message': f'Destination with UUID {uuid} not found'
+            }), 404
+        
+        analysis = card.get('analysis', {})
+        existing_sections = set(analysis.get('sections', {}).keys())
+        all_sections = set(GUIDE_SECTIONS.keys())
+        
+        # Determine what's missing
+        missing_sections = all_sections - existing_sections
+        
+        status_data = {
+            'uuid': uuid,
+            'name': card['name'],
+            'has_analysis': card.get('has_analysis', False),
+            'sections_complete': len(existing_sections),
+            'sections_total': len(all_sections),
+            'completion_percentage': (len(existing_sections) / len(all_sections)) * 100,
+            'existing_sections': list(existing_sections),
+            'missing_sections': list(missing_sections),
+            'analysis_status': analysis.get('status', 'not_started'),
+            'last_updated': analysis.get('last_updated'),
+            'model_used': analysis.get('model_used'),
+            'guide_version': analysis.get('guide_version')
+        }
+        
+        if analysis.get('content'):
+            status_data['content_length'] = len(analysis['content'])
+            status_data['card_url'] = f"{MTGABYSS_PUBLIC_URL}/card/{uuid}"
+        
+        return jsonify(status_data)
+        
+    except Exception as e:
+        logger.error(f"Error in destination_status: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Server error: {str(e)}'
+        }), 500
+
+
+# --- HELPER FUNCTIONS FOR COMPONENTIZED SYSTEM ---
+
+def format_guide_for_display(sections_dict):
+    """
+    Format individual sections into a complete guide for display.
+    This is the server-side assembly of componentized content.
+    """
+    if not sections_dict:
+        return ""
+    
+    # Order sections according to our guide structure
+    ordered_content = []
+    for section_key in GUIDE_SECTIONS.keys():
+        if section_key in sections_dict:
+            section_data = sections_dict[section_key]
+            section_title = section_data.get('title', GUIDE_SECTIONS[section_key]['title'])
+            section_content = section_data.get('content', '')
+            
+            if section_content.strip():
+                # Format each section with markdown header
+                ordered_content.append(f"## {section_title}\n\n{section_content.strip()}\n")
+    
+    return "\n".join(ordered_content)
+
+
+# --- GUIDE SECTIONS DEFINITION ---
+# Moving this from worker to shared location for API use
+
+GUIDE_SECTIONS = {
+    "overview": {
+        "title": "Card Overview",
+        "prompt": "Write a comprehensive overview of [[{card_name}]] as a Magic: The Gathering card. Explain what makes this card unique and noteworthy in the game's ecosystem."
+    },
+    "mechanics_breakdown": {
+        "title": "Mechanics and Interactions", 
+        "prompt": "Provide a detailed breakdown of [[{card_name}]]'s mechanics, rules interactions, and technical aspects. Cover how the card works, edge cases, and timing considerations."
+    },
+    "strategic_applications": {
+        "title": "Strategic Applications",
+        "prompt": "Analyze the strategic uses of [[{card_name}]] in gameplay. Cover combos, synergies, and tactical applications across different scenarios."
+    },
+    "deckbuilding_guide": {
+        "title": "Deckbuilding and Archetypes",
+        "prompt": "Explain how to build around [[{card_name}]] and what archetypes it fits into. Cover deck construction considerations, support cards, and build-around strategies."
+    },
+    "format_analysis": {
+        "title": "Format Viability",
+        "prompt": "Assess [[{card_name}]]'s performance and viability across different Magic formats (Standard, Modern, Legacy, Commander, etc.). Include competitive context and meta positioning."
+    },
+    "gameplay_scenarios": {
+        "title": "Gameplay Scenarios",
+        "prompt": "Describe common gameplay scenarios involving [[{card_name}]]. Cover typical play patterns, decision points, and situational considerations."
+    },
+    "historical_context": {
+        "title": "Historical Impact",
+        "prompt": "Explore [[{card_name}]]'s place in Magic's history, its impact on the game, and how it has evolved in the meta over time."
+    },
+    "flavor_and_design": {
+        "title": "Flavor and Design Philosophy", 
+        "prompt": "Analyze the flavor, art, and design philosophy behind [[{card_name}]]. Cover lore connections, artistic elements, and design intent."
+    },
+    "budget_considerations": {
+        "title": "Budget and Accessibility",
+        "prompt": "Discuss the financial aspects of [[{card_name}]] including market price, budget alternatives, and accessibility for different player types."
+    },
+    "advanced_techniques": {
+        "title": "Advanced Play Techniques",
+        "prompt": "Cover advanced techniques, pro tips, and high-level play considerations for [[{card_name}]]. Include expert-level insights and optimization strategies."
+    },
+    "common_mistakes": {
+        "title": "Common Mistakes and Pitfalls",
+        "prompt": "Identify common mistakes players make with [[{card_name}]] and how to avoid them. Cover misplays, misconceptions, and learning points."
+    },
+    "conclusion": {
+        "title": "Final Assessment",
+        "prompt": "Provide a final assessment and summary of [[{card_name}]]'s overall value, role in Magic, and recommendations for players considering using it."
+    }
+}
 
 
 # --- SITEMAP LOGIC ---
@@ -502,10 +811,17 @@ def sitemap_cards(n):
 
 # Helper functions for backward compatibility with guide formats
 def is_sectioned_guide(analysis_data):
-    """Check if this is a new sectioned guide or old monolithic format"""
-    return (analysis_data and 
-            isinstance(analysis_data.get('sections'), dict) and
-            analysis_data.get('guide_version', '').startswith('2.'))
+    """Check if this is a new sectioned guide or old monolithic format (robust to new worker output)"""
+    # Accept if 'sections' is a dict and has at least 3 keys (for new worker)
+    if not analysis_data:
+        return False
+    sections = analysis_data.get('sections')
+    if isinstance(sections, dict) and len(sections) >= 3:
+        return True
+    # Accept if 'guide_version' startswith '2.' (legacy sectioned)
+    if analysis_data.get('guide_version', '').startswith('2.'):
+        return True
+    return False
 
 def get_guide_content(analysis_data, language='en'):
     """Get guide content in the appropriate format"""

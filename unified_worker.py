@@ -161,95 +161,36 @@ class UnifiedWorker:
             return None
     
     def fetch_unreviewed_cards(self, limit: int) -> List[Dict]:
-        """Fetch unreviewed cards from the API"""
+        """Fetch a single card missing has_full_content: true using available endpoints."""
+        # Try /api/get_random_unreviewed first (returns 1 card by default)
         try:
             url = f'{MTGABYSS_BASE_URL}/api/get_random_unreviewed'
-            params = {'limit': limit}
-            
+            params = {'limit': 1}
             response = requests.get(url, params=params, timeout=60)
             if response.status_code == 200:
                 data = response.json()
-                if data.get('status') == 'success':
-                    return data.get('cards', [])
-                else:
-                    logger.warning(f"API returned non-success status: {data.get('message')}")
-                    return []
-            elif response.status_code == 404:
-                logger.info("No unreviewed cards available")
-                return []
-            else:
-                logger.error(f"API error: {response.status_code} - {response.text}")
-                return []
-        
+                if data.get('status') == 'success' and data.get('cards'):
+                    return [data['cards'][0]]
+            # Fallback: /api/get_next_unreviewed (returns a single card)
+            url2 = f'{MTGABYSS_BASE_URL}/api/get_next_unreviewed'
+            response2 = requests.get(url2, timeout=60)
+            if response2.status_code == 200:
+                data2 = response2.json()
+                if data2.get('status') == 'success' and data2.get('card'):
+                    return [data2['card']]
+            # Fallback: /api/get_unreviewed (returns a list)
+            url3 = f'{MTGABYSS_BASE_URL}/api/get_unreviewed'
+            response3 = requests.get(url3, timeout=60)
+            if response3.status_code == 200:
+                data3 = response3.json()
+                if data3.get('status') == 'success' and data3.get('cards'):
+                    return [data3['cards'][0]] if data3['cards'] else []
+            logger.info("No unreviewed cards available from any endpoint.")
+            return []
         except Exception as e:
-            logger.error(f"Error fetching cards: {e}")
+            logger.error(f"Error fetching card: {e}")
             return []
     
-#     def create_analysis_prompt(self, card: Dict) -> str:
-#         """Create the analysis prompt for a card"""
-#         return f"""Write a comprehensive, in-depth analysis guide for the Magic: The Gathering card [[{card['name']}]].
-
-# Include:
-# - TL;DR summary (2-3 sentences max)
-# - Detailed card mechanics and interactions
-# - Strategic uses, combos, and synergies  
-# - Deckbuilding roles and archetypes
-# - Format viability and competitive context
-# - Rules interactions and technical notes
-# - Art, flavor, and historical context
-# - Key Points Summary
-
-# Use natural paragraphs, markdown headers, and liberal use of specific card examples in [[double brackets]]. Do not use bullet points. Write at least 3357 words. Do not mention yourself or the analysis process.
-
-# Card details:
-# Name: {card['name']}
-# Mana Cost: {card.get('mana_cost', 'N/A')}
-# Type: {card.get('type_line', 'N/A')}
-# Text: {card.get('oracle_text', 'N/A')}
-# {f'P/T: {card.get("power")}/{card.get("toughness")}' if card.get('power') else ''}
-# Set: {card.get('set', 'N/A')}
-# Rarity: {card.get('rarity', 'N/A')}"""
-
-#     def create_polish_prompt(self, card: Dict, raw_analysis: str) -> str:
-#         """Create the polishing prompt for raw analysis"""
-#         return f"""Polish and enhance this Magic: The Gathering card analysis for [[{card['name']}]]. 
-
-# Improve:
-# - Flow and readability
-# - Technical accuracy
-# - Strategic depth
-# - Format coverage
-# - Card interactions and synergies
-
-# Keep the same structure and content depth. Use markdown headers. Reference other cards in [[double brackets]]. Write in natural paragraphs (no bullet points). Maintain at least 3357 words.
-
-# Original analysis:
-# {raw_analysis}"""
-
-#     def create_native_language_prompt(self, card: Dict, language: str) -> str:
-#         """Create prompt for native language analysis"""
-#         return f"""Write a comprehensive, in-depth analysis guide for the Magic: The Gathering card [[{card['name']}]] in {language} (the card's printed language).
-
-# Include:
-# - TL;DR summary
-# - Detailed card mechanics and interactions
-# - Strategic uses, combos, and synergies
-# - Deckbuilding roles and archetypes
-# - Format viability and competitive context
-# - Rules interactions and technical notes
-# - Art, flavor, and historical context
-# - Summary of key points (use a different section title for this)
-
-# Use natural paragraphs, markdown headers, and liberal use of specific card examples in [[double brackets]]. Do not use bullet points. Write at least 3357 words. Do not mention yourself or the analysis process.
-# Wrap up with a conclusion summary
-
-# Card details:
-# Name: {card['name']}
-# Mana Cost: {card.get('mana_cost', 'N/A')}
-# Type: {card.get('type_line', 'N/A')}
-# Text: {card.get('oracle_text', 'N/A')}
-# {f'P/T: {card.get("power")}/{card.get("toughness")}' if card.get('power') else ''}"""
-
     def get_section_prompts(self, card: Dict) -> Dict[str, Dict[str, str]]:
         """Return a dict of {section_key: {title, prompt}} for all guide sections, with global style instructions."""
         style_instructions = (
@@ -595,30 +536,38 @@ Examples:
                        action='store_true',
                        help='Hide analysis output (only show progress)')
     
+    parser.add_argument('--api-base-url', type=str, default=None, help='Override the MTGABYSS_BASE_URL (API endpoint)')
+
     args = parser.parse_args()
-    
+
     # Set default models
     if args.model is None:
         if args.provider == 'gemini':
             args.model = 'gemini-1.5-flash'
         elif args.provider == 'ollama':
             args.model = 'llama3.1:8b'
-    
+
+    # Allow override of API endpoint
+    global MTGABYSS_BASE_URL
+    if args.api_base_url:
+        MTGABYSS_BASE_URL = args.api_base_url
+        logger.info(f"API base URL overridden: {MTGABYSS_BASE_URL}")
+
     # Validate provider availability
     if args.provider == 'gemini' and not GEMINI_AVAILABLE:
         print("Error: Gemini provider selected but google-generativeai package not installed.")
         print("Install with: pip install google-generativeai")
         sys.exit(1)
-    
+
     if args.provider == 'ollama' and not OLLAMA_AVAILABLE:
         print("Error: Ollama provider selected but ollama package not installed.")
         print("Install with: pip install ollama")
         sys.exit(1)
-    
+
     if args.provider == 'gemini' and not GEMINI_API_KEY:
         print("Error: GEMINI_API_KEY environment variable not set.")
         sys.exit(1)
-    
+
     try:
         worker = UnifiedWorker(
             provider=args.provider,
@@ -626,9 +575,9 @@ Examples:
             batch_size=args.batch_size,
             rate_limit=args.rate_limit
         )
-        
+
         worker.run(limit=args.limit, show_output=not args.quiet)
-    
+
     except Exception as e:
         logger.error(f"Failed to start worker: {e}")
         sys.exit(1)

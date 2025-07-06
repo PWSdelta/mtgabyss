@@ -6,14 +6,14 @@
   <meta property="og:url" content="{{ request.url }}">
   <meta property="og:title" content="{{ card.name }} | MTGAbyss Card Analysis">
   <meta property="og:description" content="{{ (card.analysis.content or card.analysis.long_form)[:250]|striptags|replace('\n', ' ') if card.analysis and (card.analysis.content or card.analysis.long_form) else 'Strategy and analysis for ' ~ card.name }}">
-  <meta property="og:image" content="{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}">
+  <meta property="og:image" content="{{ card.image_uris.normal if card.image_uris and card.image_uris.normal else url_for('static', filename='img/cardback.png', _external=True) }}">
 {% endblock %}
 {% block twitter_meta %}
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="{{ request.url }}">
   <meta name="twitter:title" content="{{ card.name }} | MTGAbyss Card Analysis">
   <meta name="twitter:description" content="{{ (card.analysis.content or card.analysis.long_form)[:250]|striptags|replace('\n', ' ') if card.analysis and (card.analysis.content or card.analysis.long_form) else 'Strategy and analysis for ' ~ card.name }}">
-  <meta name="twitter:image" content="{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}">
+  <meta name="twitter:image" content="{{ card.image_uris.normal if card.image_uris and card.image_uris.normal else url_for('static', filename='img/cardback.png', _external=True) }}">
 {% endblock %}
 {% block schema_org %}
 <script type="application/ld+json">
@@ -21,7 +21,7 @@
   "@context": "https://schema.org/",
   "@type": "Product",
   "name": "{{ card.name }}",
-  "image": "{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png', _external=True) }}",
+  "image": "{{ card.image_uris.normal if card.image_uris and card.image_uris.normal else url_for('static', filename='img/cardback.png', _external=True) }}",
   "description": "{{ (card.analysis.content or card.analysis.long_form)[:250]|striptags|replace('\n', ' ') if card.analysis and (card.analysis.content or card.analysis.long_form) else 'Strategy and analysis for ' ~ card.name }}",
   "sku": "{{ card.uuid }}",
   "url": "{{ request.url }}",
@@ -48,7 +48,7 @@
             <div class="card mb-4 shadow-sm">
                 <div class="bg-light text-center p-2">
                     <img 
-                        src="{{ card.imageUris.normal if card.imageUris and card.imageUris.normal else url_for('static', filename='img/cardback.png') }}" 
+                        src="{{ card.image_uris.normal if card.image_uris and card.image_uris.normal else url_for('static', filename='img/cardback.png') }}" 
                         class="img-fluid rounded" 
                         alt="{{ card.name }}"
                         style="max-height: 340px; object-fit: contain;"
@@ -102,9 +102,9 @@
                         <span class="ms-1">{{ card.released_at or "—" }}</span>
                     </div>
                     <!-- Legalities removed: see Scryfall for full details -->
-                    {% if card.imageUris and card.imageUris.art_crop %}
+                    {% if card.image_uris and card.image_uris.art_crop %}
                     <div class="mb-2">
-                        <img src="{{ card.imageUris.art_crop }}" alt="Art crop" class="img-fluid rounded" style="max-height: 80px;">
+                        <img src="{{ card.image_uris.art_crop }}" alt="Art crop" class="img-fluid rounded" style="max-height: 80px;">
                     </div>
                     {% endif %}
                     <!-- Rulings Accordion (async loaded) -->
@@ -117,9 +117,9 @@
                         <ul class="list-group list-group-flush">
                             {% for rc in recent_cards %}
                             <li class="list-group-item d-flex align-items-center">
-                                <a href="/card/{{ rc.uuid }}" class="me-2 recent-card-popover" data-image="{{ rc.imageUris.normal if rc.imageUris and rc.imageUris.normal else url_for('static', filename='img/cardback.png') }}">
-                                    {% if rc.imageUris and rc.imageUris.normal %}
-                                        <img src="{{ rc.imageUris.normal }}" alt="{{ rc.name }}" style="width:40px; height:56px; object-fit:cover; border-radius:4px;">
+                                <a href="/card/{{ rc.uuid }}" class="me-2 recent-card-popover" data-image="{{ rc.image_uris.normal if rc.image_uris and rc.image_uris.normal else url_for('static', filename='img/cardback.png') }}">
+                                    {% if rc.image_uris and rc.image_uris.normal %}
+                                        <img src="{{ rc.image_uris.normal }}" alt="{{ rc.name }}" style="width:40px; height:56px; object-fit:cover; border-radius:4px;">
                                     {% else %}
                                         <img src="{{ url_for('static', filename='img/cardback.png') }}" alt="No image" style="width:40px; height:56px; object-fit:cover; border-radius:4px;">
                                     {% endif %}
@@ -400,9 +400,9 @@ html {
                     <div class="row row-cols-2 row-cols-md-2 g-3">
                         {% for m in mentioned_cards %}
                         <div class="col">
-                            <a href="/card/{{ m.uuid }}" class="text-decoration-none text-dark card-maylike-popover" data-image="{{ m.imageUris.normal if m.imageUris and m.imageUris.normal else url_for('static', filename='img/cardback.png') }}">
+                            <a href="/card/{{ m.uuid }}" class="text-decoration-none text-dark">
                                 <div class="card h-100 border-0">
-                                    <img src="{{ m.imageUris.normal if m.imageUris and m.imageUris.normal else url_for('static', filename='img/cardback.png') }}" class="card-img-top rounded" alt="{{ m.name }}" style="max-height: 120px; object-fit: contain;">
+                                    <img src="{{ m.image_uris.normal if m.image_uris and m.image_uris.normal else 'https://cards.scryfall.io/normal/back/5/5e/Magic_card_back.jpg' }}" class="card-img-top rounded" alt="{{ m.name }}" style="max-height: 120px; object-fit: contain;">
                                     <div class="card-body p-2">
                                         <div class="fw-bold small text-center">{{ m.name }}</div>
                                     </div>

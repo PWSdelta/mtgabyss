@@ -28,9 +28,9 @@
     {% for card in cards %}
     <div class="col">
         <div class="card h-100">
-            {% if card.get('imageUris', {}).get('normal') %}
+            {% if card.get('image_uris', {}).get('normal') %}
             <a href="/card/{{ card['uuid'] }}">
-                <img src="{{ card['imageUris']['normal'] }}" class="card-img-top" alt="{{ card['name'] }}">
+                <img src="{{ card['image_uris']['normal'] }}" class="card-img-top" alt="{{ card['name'] }}">
             </a>
             {% endif %}
             <div class="card-body">
