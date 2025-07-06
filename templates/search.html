@@ -3,75 +3,669 @@
 {% block title %}Search Cards - MTG Analysis{% endblock %}
 
 {% block content %}
-<!-- Hero Section -->
-<div class="py-5 mb-4 bg-light rounded-3 shadow-sm">
-    <div class="container text-center">
-        <h1 class="display-4 mb-3">MTGAbyss</h1>
-        <p class="lead mb-4">Search for any Magic: The Gathering card and get a deep-dive analysis powered by AI.</p>
-        <form method="GET" action="/" class="row justify-content-center g-2">
-            <div class="col-12 col-md-6">
-                <input type="search" name="q" class="form-control form-control-lg" placeholder="Search cards..." value="{{ query }}">
-            </div>
-            <div class="col-auto">
-                <button type="submit" class="btn btn-primary btn-lg px-4">Search</button>
-            </div>
-            <div class="col-auto">
-                <a href="/random" class="btn btn-outline-secondary btn-lg px-4" id="random-card-btn">Random Card</a>
-            </div>
-        </form>
+<!-- Enhanced Hero Section -->
+<div class="hero-section">
+    <div class="hero-overlay">
+        <div class="container text-center py-5">
+            <h1 class="hero-title mb-3">MTGAbyss</h1>
+            <p class="hero-subtitle mb-4">Search for any Magic: The Gathering card and get a deep-dive analysis powered by AI.</p>
+            <form method="GET" action="/" class="hero-search-form">
+                <div class="search-container">
+                    <input type="search" name="q" class="hero-search-input" placeholder="Search cards..." value="{{ query }}">
+                    <button type="submit" class="hero-search-btn">
+                        <i class="fas fa-search"></i>
+                        Search
+                    </button>
+                    <a href="/random" class="hero-random-btn" id="random-card-btn">
+                        <i class="fas fa-dice"></i>
+                        Random Card
+                    </a>
+                </div>
+            </form>
+        </div>
     </div>
 </div>
 
+<div class="container mt-4">
 
-<!-- Results Grid -->
-<div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+<!-- Search Results Section -->
+{% if cards %}
+<div class="results-header mb-4">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h2 class="h3 mb-1">Search Results</h2>
+            <p class="text-muted mb-0">
+                {% if query %}
+                    Found {{ cards|length }} card{{ 's' if cards|length != 1 else '' }} for "{{ query }}"
+                {% else %}
+                    Showing {{ cards|length }} recent card{{ 's' if cards|length != 1 else '' }}
+                {% endif %}
+            </p>
+        </div>
+        <div class="search-actions">
+            <a href="/random" class="btn btn-outline-primary">
+                <i class="fas fa-dice"></i> Random Card
+            </a>
+        </div>
+    </div>
+</div>
+
+<div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 row-cols-xl-4 g-4">
     {% for card in cards %}
     <div class="col">
-        <div class="card h-100">
+        <div class="card h-100 card-hover">
             {% if card.get('image_uris', {}).get('normal') %}
-            <a href="/card/{{ card['uuid'] }}">
-                <img src="{{ card['image_uris']['normal'] }}" class="card-img-top" alt="{{ card['name'] }}">
-            </a>
+            <div class="card-image-container">
+                <a href="/card/{{ card['uuid'] }}">
+                    <img src="{{ card['image_uris']['normal'] }}" class="card-img-top" alt="{{ card['name'] }}">
+                </a>
+                <div class="card-overlay">
+                    {% if card.get('analysis') %}
+                        <span class="analysis-badge analyzed">
+                            <i class="fas fa-check-circle"></i> Analyzed
+                        </span>
+                    {% else %}
+                        <span class="analysis-badge pending">
+                            <i class="fas fa-clock"></i> Pending
+                        </span>
+                    {% endif %}
+                </div>
+            </div>
             {% endif %}
             <div class="card-body">
                 <h5 class="card-title">{{ card['name'] }}</h5>
-                {% if card.get('analysis') %}
-                <span class="badge bg-success">Analyzed</span>
-                {% else %}
-                <span class="badge bg-secondary">Pending Analysis</span>
+                {% if card.get('type_line') %}
+                    <p class="card-type">{{ card['type_line'] }}</p>
                 {% endif %}
-                <p class="card-text">{{ card.get('type_line', '') }}</p>
-                <a href="/card/{{ card['uuid'] }}" class="btn btn-primary">View Details</a>
+                {% if card.get('mana_cost') %}
+                    <p class="card-mana small text-muted">{{ card['mana_cost'] }}</p>
+                {% endif %}
+                <a href="/card/{{ card['uuid'] }}" class="btn btn-primary btn-sm mt-auto">
+                    {% if card.get('analysis') %}
+                        View Analysis
+                    {% else %}
+                        View Card
+                    {% endif %}
+                </a>
             </div>
         </div>
     </div>
     {% endfor %}
 </div>
 
-<!-- Closing Hero Section -->
-<div class="py-5 mt-5 bg-light rounded-3 shadow-sm">
-    <div class="container text-center">
-        <h2 class="display-6 mb-3">Discover More Magic</h2>
-        <p class="lead mb-4">
-            MTGAbyss is your portal to deep, AI-powered Magic: The Gathering card analysis.<br>
-            Search, explore, and get inspired for your next deck or brew!
-        </p>
-        <form method="GET" action="/" class="row justify-content-center g-2 mb-3">
-            <div class="col-12 col-md-6">
-                <input type="search" name="q" class="form-control form-control-lg" placeholder="Search another card...">
+{% else %}
+<!-- No Results / Welcome Section -->
+<div class="welcome-section text-center py-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <div class="welcome-content">
+                <i class="fas fa-magic welcome-icon mb-4"></i>
+                <h2 class="h1 mb-3">Welcome to MTGAbyss</h2>
+                <p class="lead mb-4">
+                    Discover the depths of Magic: The Gathering strategy with AI-powered card analysis.
+                    Search for any card to unlock detailed insights, combos, and deck-building advice.
+                </p>
+                
+                <!-- Quick Start Actions -->
+                <div class="quick-actions mb-5">
+                    <div class="row g-3 justify-content-center">
+                        <div class="col-auto">
+                            <a href="/random" class="btn btn-primary btn-lg">
+                                <i class="fas fa-dice"></i> Random Card
+                            </a>
+                        </div>
+                        <div class="col-auto">
+                            <a href="/gallery" class="btn btn-outline-primary btn-lg">
+                                <i class="fas fa-images"></i> Art Gallery
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Features Grid -->
+                <div class="features-grid">
+                    <div class="row g-4">
+                        <div class="col-md-4">
+                            <div class="feature-card">
+                                <div class="feature-icon">
+                                    <i class="fas fa-brain"></i>
+                                </div>
+                                <h4>AI Analysis</h4>
+                                <p>Deep strategic analysis powered by advanced AI, covering combos, synergies, and meta insights.</p>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="feature-card">
+                                <div class="feature-icon">
+                                    <i class="fas fa-search"></i>
+                                </div>
+                                <h4>Smart Search</h4>
+                                <p>Find any Magic card instantly with our comprehensive database and intelligent search.</p>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="feature-card">
+                                <div class="feature-icon">
+                                    <i class="fas fa-chart-line"></i>
+                                </div>
+                                <h4>Deck Insights</h4>
+                                <p>Get detailed recommendations for deck building and card interactions.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="col-auto">
-                <button type="submit" class="btn btn-primary btn-lg px-4">Search</button>
-            </div>
-            <div class="col-auto">
-                <a href="/random" class="btn btn-outline-secondary btn-lg px-4">Random Card</a>
-            </div>
-        </form>
-        <div>
-            <small class="text-muted">All card data &copy; Scryfall. Not affiliated with Wizards of the Coast.</small>
         </div>
     </div>
 </div>
+{% endif %}
+
+<!-- Footer CTA Section -->
+<div class="footer-cta-section">
+    <div class="hero-overlay">
+        <div class="container text-center py-5">
+            {% if cards %}
+            <!-- Search Results Footer -->
+            <h2 class="cta-title mb-3">Explore More Cards</h2>
+            <p class="cta-subtitle mb-4">
+                Discover thousands of analyzed Magic cards and unlock new strategies for your decks.
+            </p>
+            <div class="cta-actions">
+                <a href="/random" class="btn btn-light btn-lg me-3">
+                    <i class="fas fa-dice"></i> Random Card
+                </a>
+                <a href="/gallery" class="btn btn-outline-light btn-lg">
+                    <i class="fas fa-images"></i> Browse Gallery
+                </a>
+            </div>
+            {% else %}
+            <!-- Homepage Footer -->
+            <h2 class="cta-title mb-3">Ready to Dive Deeper?</h2>
+            <p class="cta-subtitle mb-4">
+                Join thousands of players using MTGAbyss to improve their Magic: The Gathering gameplay.
+            </p>
+            <div class="cta-actions">
+                <form method="GET" action="/" class="footer-search-form mb-3">
+                    <div class="footer-search-container">
+                        <input type="search" name="q" class="footer-search-input" placeholder="Search any Magic card...">
+                        <button type="submit" class="footer-search-btn">
+                            <i class="fas fa-search"></i>
+                        </button>
+                    </div>
+                </form>
+                <div class="social-links">
+                    <a href="https://discord.gg/xCQxCvszDn" target="_blank" class="btn btn-outline-light">
+                        <i class="fab fa-discord"></i> Join Discord
+                    </a>
+                </div>
+            </div>
+            {% endif %}
+            
+            <div class="mt-4">
+                <small class="footer-disclaimer">All card data &copy; Scryfall. Not affiliated with Wizards of the Coast.</small>
+            </div>
+        </div>
+    </div>
+</div>
+</div>
+
+<style>
+:root {
+    --primary-blue: #2563eb;
+    --primary-blue-dark: #1d4ed8;
+    --primary-blue-light: #3b82f6;
+    --accent-purple: #7c3aed;
+    --accent-purple-dark: #6d28d9;
+    --success-green: #059669;
+    --warning-orange: #d97706;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-500: #6b7280;
+    --gray-600: #4b5563;
+    --gray-700: #374151;
+    --gray-800: #1f2937;
+    --gray-900: #111827;
+    --navy-blue: #0f172a;
+    --navy-blue-light: #1e293b;
+    --navy-blue-dark: #020617;
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+}
+
+/* Hero Section Styling */
+.hero-section {
+    background: linear-gradient(135deg, var(--navy-blue) 0%, var(--navy-blue-light) 50%, var(--primary-blue-dark) 100%);
+    position: relative;
+    overflow: hidden;
+    margin: -2rem -15px 0 -15px;
+    width: calc(100% + 30px);
+}
+
+.hero-section::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-image: 
+        radial-gradient(circle at 25% 25%, rgba(59, 130, 246, 0.3) 0%, transparent 50%),
+        radial-gradient(circle at 75% 75%, rgba(124, 58, 237, 0.3) 0%, transparent 50%);
+    opacity: 0.7;
+}
+
+.hero-overlay {
+    position: relative;
+    z-index: 2;
+}
+
+.hero-title {
+    font-size: 3.5rem;
+    font-weight: 800;
+    color: white;
+    text-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+    background: linear-gradient(135deg, #ffffff 0%, #e0e7ff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.hero-subtitle {
+    font-size: 1.25rem;
+    color: rgba(255, 255, 255, 0.9);
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    font-weight: 400;
+}
+
+.hero-search-form {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.search-container {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.hero-search-input {
+    flex: 1;
+    min-width: 300px;
+    padding: 1rem 1.5rem;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-radius: 50px;
+    font-size: 1.1rem;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    box-shadow: var(--shadow-lg);
+    transition: all 0.3s ease;
+}
+
+.hero-search-input:focus {
+    outline: none;
+    border-color: var(--primary-blue-light);
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2), var(--shadow-xl);
+    background: white;
+}
+
+.hero-search-btn, .hero-random-btn {
+    padding: 1rem 2rem;
+    border: none;
+    border-radius: 50px;
+    font-weight: 600;
+    font-size: 1.1rem;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    transition: all 0.3s ease;
+    box-shadow: var(--shadow-lg);
+    white-space: nowrap;
+}
+
+.hero-search-btn {
+    background: linear-gradient(135deg, var(--primary-blue) 0%, var(--primary-blue-dark) 100%);
+    color: white;
+}
+
+.hero-search-btn:hover {
+    background: linear-gradient(135deg, var(--primary-blue-dark) 0%, var(--accent-purple) 100%);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-xl);
+    color: white;
+}
+
+.hero-random-btn {
+    background: rgba(255, 255, 255, 0.95);
+    color: var(--gray-700);
+    border: 2px solid rgba(255, 255, 255, 0.5);
+}
+
+.hero-random-btn:hover {
+    background: white;
+    color: var(--primary-blue);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-xl);
+    text-decoration: none;
+}
+
+/* Closing Hero Section */
+.footer-cta-section {
+    background: linear-gradient(135deg, var(--gray-700) 0%, var(--gray-800) 50%, var(--gray-900) 100%);
+    position: relative;
+    overflow: hidden;
+    margin: 4rem -50vw 0 -50vw;
+    left: 50%;
+    right: 50%;
+    width: 100vw;
+}
+
+.footer-cta-section::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-image: 
+        radial-gradient(circle at 25% 75%, rgba(37, 99, 235, 0.2) 0%, transparent 50%),
+        radial-gradient(circle at 75% 25%, rgba(124, 58, 237, 0.2) 0%, transparent 50%);
+    opacity: 0.8;
+}
+
+.cta-title {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: white;
+    text-shadow: 0 3px 6px rgba(0, 0, 0, 0.3);
+}
+
+.cta-subtitle {
+    font-size: 1.1rem;
+    color: rgba(255, 255, 255, 0.85);
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.footer-search-form {
+    max-width: 500px;
+    margin: 0 auto;
+}
+
+.footer-search-container {
+    display: flex;
+    border-radius: 50px;
+    overflow: hidden;
+    box-shadow: var(--shadow-lg);
+}
+
+.footer-search-input {
+    flex: 1;
+    padding: 1rem 1.5rem;
+    border: none;
+    font-size: 1rem;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+}
+
+.footer-search-input:focus {
+    outline: none;
+    background: white;
+}
+
+.footer-search-btn {
+    padding: 1rem 1.5rem;
+    border: none;
+    background: linear-gradient(135deg, var(--primary-blue) 0%, var(--primary-blue-dark) 100%);
+    color: white;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+.footer-search-btn:hover {
+    background: linear-gradient(135deg, var(--primary-blue-dark) 0%, var(--accent-purple) 100%);
+}
+
+.social-links .btn {
+    margin: 0 0.5rem;
+}
+
+.footer-disclaimer {
+    color: rgba(255, 255, 255, 0.7);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* Welcome Section Styling */
+.welcome-section {
+    background: linear-gradient(135deg, var(--gray-50) 0%, white 100%);
+    border-radius: 20px;
+    margin: 2rem 0;
+    box-shadow: var(--shadow-lg);
+}
+
+.welcome-icon {
+    font-size: 4rem;
+    color: var(--primary-blue);
+    background: linear-gradient(135deg, var(--primary-blue) 0%, var(--accent-purple) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.quick-actions .btn {
+    border-radius: 50px;
+    padding: 0.75rem 2rem;
+    font-weight: 600;
+}
+
+.features-grid {
+    margin-top: 3rem;
+}
+
+.feature-card {
+    background: white;
+    padding: 2rem;
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    transition: all 0.3s ease;
+    border: 1px solid var(--gray-200);
+    height: 100%;
+}
+
+.feature-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-lg);
+}
+
+.feature-icon {
+    width: 60px;
+    height: 60px;
+    background: linear-gradient(135deg, var(--primary-blue) 0%, var(--accent-purple) 100%);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1rem;
+    font-size: 1.5rem;
+    color: white;
+}
+
+.feature-card h4 {
+    color: var(--gray-800);
+    margin-bottom: 1rem;
+    font-weight: 600;
+}
+
+.feature-card p {
+    color: var(--gray-600);
+    line-height: 1.6;
+    margin: 0;
+}
+
+/* Results Header */
+.results-header {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--gray-200);
+}
+
+.search-actions .btn {
+    border-radius: 8px;
+    font-weight: 600;
+}
+
+/* Enhanced Card Styling */
+.card-hover {
+    transition: all 0.3s ease;
+    border: 1px solid var(--gray-200);
+    overflow: hidden;
+}
+
+.card-hover:hover {
+    transform: translateY(-8px);
+    box-shadow: var(--shadow-xl);
+}
+
+.card-image-container {
+    position: relative;
+    overflow: hidden;
+}
+
+.card-image-container img {
+    transition: all 0.3s ease;
+}
+
+.card-hover:hover .card-image-container img {
+    transform: scale(1.05);
+}
+
+.card-overlay {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+}
+
+.analysis-badge {
+    padding: 0.5rem 1rem;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-shadow: none;
+    box-shadow: var(--shadow);
+    border: 2px solid white;
+}
+
+.analysis-badge.analyzed {
+    background: linear-gradient(135deg, var(--success-green) 0%, #047857 100%);
+    color: white;
+}
+
+.analysis-badge.pending {
+    background: linear-gradient(135deg, var(--warning-orange) 0%, #d97706 100%);
+    color: white;
+}
+
+.card-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--gray-800);
+    margin-bottom: 0.5rem;
+    line-height: 1.3;
+}
+
+.card-type {
+    color: var(--gray-600);
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+    line-height: 1.4;
+}
+
+.card-mana {
+    font-family: 'Courier New', monospace;
+    background: var(--gray-100);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    display: inline-block;
+}
+
+.card-body {
+    display: flex;
+    flex-direction: column;
+    padding: 1.25rem;
+}
+
+.card-body .btn {
+    margin-top: auto;
+    border-radius: 8px;
+    font-weight: 600;
+}
+
+/* Card grid enhancements */
+.card {
+    border: 1px solid var(--gray-200);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    transition: all 0.3s ease;
+    background: white;
+}
+
+.card:hover {
+    box-shadow: var(--shadow-lg);
+    transform: translateY(-4px);
+}
+
+.card-img-top {
+    border-radius: 12px 12px 0 0;
+    transition: all 0.3s ease;
+}
+
+.card:hover .card-img-top {
+    transform: scale(1.02);
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .hero-section, .closing-hero-section {
+        margin: -1rem -15px 0 -15px;
+        width: calc(100% + 30px);
+    }
+    
+    .hero-title {
+        font-size: 2.5rem;
+    }
+    
+    .hero-title-small {
+        font-size: 2rem;
+    }
+    
+    .search-container, .search-container-small {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .hero-search-input, .hero-search-input-small {
+        min-width: auto;
+        width: 100%;
+    }
+    
+    .hero-search-btn, .hero-random-btn,
+    .hero-search-btn-small, .hero-random-btn-small {
+        width: 100%;
+        justify-content: center;
+    }
+}
+</style>
 
 
 <script>
