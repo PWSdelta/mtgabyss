@@ -1121,11 +1121,13 @@ def extract_mentions_from_guide(analysis_data, language='en'):
         if not text:
             return []
         names = set()
-        # [[Card Name]]
+        # [[Card Name]] - double brackets (priority)
         for m in re.findall(r'\[\[(.+?)\]\]', text):
             names.add(m.strip())
-        # [Card Name] but not [B] or [/B]
-        for m in re.findall(r'\[(?!/?B\])(.*?)\]', text):
+        # [Card Name] but not [B] or [/B] and not part of [[ ]]
+        # Remove any [[ ]] patterns first to avoid conflicts
+        text_without_double_brackets = re.sub(r'\[\[.+?\]\]', '', text)
+        for m in re.findall(r'\[(?!/?B\])(.*?)\]', text_without_double_brackets):
             names.add(m.strip())
         return list(names)
     
@@ -1193,7 +1195,7 @@ def get_most_mentioned():
     try:
         # Optional query parameters
         limit = int(request.args.get('limit', 1))
-        min_mentions = int(request.args.get('min_mentions', 2))  # Minimum mentions to be considered
+        min_mentions = int(request.args.get('min_mentions', 1))  # Minimum mentions to be considered
         
         # Get most mentioned cards that don't have analysis yet
         pipeline = [
@@ -1335,10 +1337,6 @@ def add_mentioned_cards_to_priority_queue(mentioned_card_names: list):
             if not card:
                 logger.debug(f"Card '{card_name}' not found in database")
                 continue  # Card doesn't exist in database
-                
-            if card.get('has_full_content'):
-                logger.debug(f"Card '{card['name']}' already has analysis")
-                continue  # Card already has analysis
                 
             # Check if already in priority queue
             existing = priority_collection.find_one({'uuid': card['uuid']})

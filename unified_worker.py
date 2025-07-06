@@ -163,7 +163,7 @@ class UnifiedWorker:
         """Fetch cards that are frequently mentioned but need analysis."""
         try:
             url = f'{MTGABYSS_BASE_URL}/api/get_most_mentioned'
-            params = {'limit': limit, 'min_mentions': 2}  # At least 2 mentions
+            params = {'limit': limit, 'min_mentions': 1}  # At least 1 mention
             response = requests.get(url, params=params, timeout=60)
             logger.info(f"Most mentioned endpoint: {url} -> {response.status_code}")
             if response.status_code == 200:

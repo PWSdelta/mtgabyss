@@ -246,9 +246,56 @@
                     </div>
                 {% endif %}
             {% else %}
-                <div class="alert alert-info mb-4">
-                    <strong>Analysis not yet available for this card.</strong><br>
-                    Check back soon, or explore similar cards below!
+                <!-- Enhanced No Analysis State -->
+                <div class="no-analysis-state">
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-header bg-warning text-dark">
+                            <h4 class="mb-0"><i class="fas fa-hourglass-half"></i> Analysis Coming Soon</h4>
+                        </div>
+                        <div class="card-body text-center py-5">
+                            <div class="analysis-preview">
+                                <i class="fas fa-magic analysis-icon mb-4"></i>
+                                <h5 class="mb-3">{{ card.name }} Strategy Guide</h5>
+                                <p class="text-muted mb-4">
+                                    Our AI is preparing a comprehensive analysis covering:
+                                </p>
+                                <div class="row g-3 mb-4">
+                                    <div class="col-md-6">
+                                        <div class="preview-item">
+                                            <i class="fas fa-chess"></i>
+                                            <span>Strategic Applications</span>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="preview-item">
+                                            <i class="fas fa-link"></i>
+                                            <span>Card Synergies</span>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="preview-item">
+                                            <i class="fas fa-layer-group"></i>
+                                            <span>Deck Building Tips</span>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="preview-item">
+                                            <i class="fas fa-chart-line"></i>
+                                            <span>Meta Analysis</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="cta-buttons">
+                                    <a href="/random" class="btn btn-primary me-2">
+                                        <i class="fas fa-dice"></i> Explore Random Card
+                                    </a>
+                                    <a href="/" class="btn btn-outline-secondary">
+                                        <i class="fas fa-search"></i> Search Other Cards
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             {% endif %}
         </div>
@@ -781,6 +828,55 @@ body {
 
 .mt-4 {
     margin-top: 2rem !important;
+}
+
+/* No Analysis State Styling */
+.no-analysis-state .card-header.bg-warning {
+    background: linear-gradient(135deg, var(--warning-orange) 0%, #d97706 100%) !important;
+    color: white !important;
+}
+
+.analysis-icon {
+    font-size: 3rem;
+    color: var(--primary-blue);
+    background: linear-gradient(135deg, var(--primary-blue) 0%, var(--accent-purple) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.preview-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    background: var(--gray-50);
+    border-radius: 8px;
+    border-left: 3px solid var(--primary-blue);
+    transition: all 0.3s ease;
+}
+
+.preview-item:hover {
+    background: var(--gray-100);
+    transform: translateX(4px);
+}
+
+.preview-item i {
+    color: var(--primary-blue);
+    font-size: 1.1rem;
+    width: 20px;
+    text-align: center;
+}
+
+.preview-item span {
+    font-weight: 500;
+    color: var(--gray-700);
+}
+
+.cta-buttons .btn {
+    border-radius: 25px;
+    font-weight: 600;
+    padding: 0.75rem 1.5rem;
 }
 </style>
 {% endblock %}
