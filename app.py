@@ -341,8 +341,14 @@ def get_random_unreviewed():
             if len(result_cards) >= limit:
                 break
                 
-            card = cards.find_one({'uuid': mention_doc['uuid']})
-            if card:  # Card exists, add to results regardless of analysis status
+            card = cards.find_one({
+                'uuid': mention_doc['uuid'],
+                '$or': [
+                    {'analysis': {'$exists': False}},
+                    {'analysis': None}
+                ]
+            })
+            if card:  # Card exists and needs analysis
                 card_data = {
                     'uuid': card.get('uuid'),
                     'scryfall_id': card.get('scryfall_id'),
@@ -370,8 +376,19 @@ def get_random_unreviewed():
             remaining_needed = limit - len(result_cards)
             existing_uuids = [card['uuid'] for card in result_cards]
             
-            # Get random cards not already in results
-            query = {'uuid': {'$nin': existing_uuids}} if existing_uuids else {}
+            # Get random cards not already in results and without analysis
+            query = {
+                'uuid': {'$nin': existing_uuids},
+                '$or': [
+                    {'analysis': {'$exists': False}},
+                    {'analysis': None}
+                ]
+            } if existing_uuids else {
+                '$or': [
+                    {'analysis': {'$exists': False}},
+                    {'analysis': None}
+                ]
+            }
             random_pipeline = [
                 {'$match': query},
                 {'$sample': {'size': remaining_needed * 2}}  # Get extra in case some are filtered
@@ -419,14 +436,20 @@ def get_random_unreviewed():
         # Determine primary selection type for worker logging
         from_mentions = len([c for c in result_cards if c.get('priority_source') == 'mentions'])
         from_random = len([c for c in result_cards if c.get('priority_source') == 'random'])
-        
+
         if from_mentions > 0:
             selection_type = 'mentions'
         elif from_random > 0:
             selection_type = 'random'
         else:
             selection_type = 'unknown'
-        
+
+        # Log if any card came from recommended (mentions) and how many
+        if from_mentions > 0:
+            logger.info(f"Selected {from_mentions} recommended card(s) from mentions for work assignment.")
+        if from_random > 0:
+            logger.info(f"Selected {from_random} card(s) from random fallback for work assignment.")
+
         return jsonify({
             'status': 'success',
             'cards': result_cards,
@@ -1251,6 +1274,16 @@ def update_mentions_histogram_simple(mentioned_card_names, mentioning_card_name)
             if not card:
                 logger.debug(f"Card '{card_name}' not found for mention tracking")
                 continue
+            
+            # Check if card already has a review - skip if it does
+            existing_analysis = cards.find_one(
+                {'uuid': card['uuid'], 'analysis': {'$exists': True, '$ne': None}},
+                {'uuid': 1}
+            )
+            
+            if existing_analysis:
+                logger.debug(f"Skipping mention tracking for '{card['name']}' - already has analysis")
+                continue
                 
             # Increment mention count for this UUID
             mentions_histogram.update_one(
@@ -1426,17 +1459,29 @@ def add_mentioned_cards_to_priority_queue(mentioned_card_names: list):
                     {'scryfall_id': card_name}
                 ]
             }, {'uuid': 1, 'name': 1, 'has_full_content': 1})
-            
+
             if not card:
                 logger.debug(f"Card '{card_name}' not found in database")
                 continue  # Card doesn't exist in database
-                
+
+            # Check if card already has an analysis
+            existing_analysis = cards.find_one({
+                'uuid': card['uuid'],
+                '$or': [
+                    {'analysis': {'$exists': True, '$ne': None}},
+                    {'has_full_content': True}
+                ]
+            }, {'uuid': 1})
+            if existing_analysis:
+                logger.debug(f"Card '{card['name']}' already has analysis, skipping priority queue")
+                continue  # Already analyzed
+
             # Check if already in priority queue
             existing = priority_collection.find_one({'uuid': card['uuid']})
             if existing:
                 logger.debug(f"Card '{card['name']}' already in priority queue")
                 continue  # Already in priority queue
-            
+
             # Add to TOP of priority queue
             try:
                 priority_collection.insert_one({
@@ -1449,11 +1494,11 @@ def add_mentioned_cards_to_priority_queue(mentioned_card_names: list):
                     'auto_added': True,  # Mark as automatically added
                     'mentioned_in': 'auto_discovery'
                 })
-                
+
                 logger.info(f"Auto-added '{card['name']}' to TOP of priority queue (order {insert_priority})")
                 insert_priority -= 1 # Next card goes even higher in priority
                 added_count += 1
-                
+
             except Exception as insert_error:
                 logger.error(f"Error auto-adding '{card_name}' to priority: {insert_error}")
         

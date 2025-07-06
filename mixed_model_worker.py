@@ -98,6 +98,28 @@ def simple_log(message: str):
     print(f"[{timestamp}] {message}")
 
 class MixedModelWorker:
+    # Define the display order for sections (can be changed as needed)
+    SECTION_DISPLAY_ORDER = [
+        "tldr", "mechanics", "strategic", "deckbuilding", "format",
+        "scenarios", "history", "flavor", "budget", "advanced", "mistakes", "conclusion"
+    ]
+
+    # Optionally, map section keys to display names for the frontend (for even more flexibility)
+    SECTION_DISPLAY_MAP = {
+        "tldr": "TL;DR Summary",
+        "mechanics": "Card Mechanics & Interactions",
+        "strategic": "Strategic Applications",
+        "deckbuilding": "Deckbuilding & Synergies",
+        "format": "Format Analysis",
+        "scenarios": "Gameplay Scenarios",
+        "history": "Historical Context",
+        "flavor": "Flavor & Design",
+        "budget": "Budget & Accessibility",
+        "advanced": "Advanced Techniques",
+        "mistakes": "Common Mistakes",
+        "conclusion": "Conclusion"
+    }
+
     def __init__(self, gemini_model: str = 'gemini-1.5-flash', ollama_model: str = 'llama3.1:latest', rate_limit: float = 1.0):
         self.gemini_model = gemini_model
         self.ollama_model = ollama_model
@@ -348,55 +370,66 @@ Style Guidelines:
         }
     
     def process_card_mixed_model(self, card: Dict) -> Optional[Dict]:
-        """Process a card using mixed models for different sections"""
+        """Process a card using mixed models for different sections, grouped by model for batching"""
         card_name = card.get('name', 'Unknown Card')
         card_uuid = card.get('uuid')
-        
+
         logger.info(f"Starting mixed-model analysis for {card_name} (UUID: {card_uuid})")
         start_time = time.time()
-        
+
         sections = {}
         section_definitions = self.get_section_definitions()
-        
-        # Generate each section with its assigned model
+
+        # Group section keys by model provider for batching
+        model_to_sections = {'gemini': [], 'ollama': []}
+        for section_key, section_config in section_definitions.items():
+            model_provider = self.get_model_for_section(section_key, section_config)
+            if model_provider in model_to_sections:
+                model_to_sections[model_provider].append(section_key)
+            else:
+                model_to_sections[model_provider] = [section_key]
+
         gemini_sections = 0
         ollama_sections = 0
         failed_sections = 0
-        
-        for section_key, section_config in section_definitions.items():
-            model_provider = self.get_model_for_section(section_key, section_config)
-            
-            # Check if the required model is available
-            if model_provider == 'gemini' and not self.gemini_client:
-                logger.warning(f"Skipping section '{section_key}' - Gemini not available")
-                failed_sections += 1
+
+        # Batch process by model provider
+        for model_provider, section_keys in model_to_sections.items():
+            if not section_keys:
                 continue
-            elif model_provider == 'ollama' and not self.ollama_available:
-                logger.warning(f"Skipping section '{section_key}' - Ollama not available")
-                failed_sections += 1
-                continue
-            
-            section_result = self.generate_section(section_key, section_config, card)
-            
-            if section_result:
-                sections[section_key] = section_result
-                if model_provider == 'gemini':
-                    gemini_sections += 1
+            # Optionally, you could batch prompts here for each model if your API supports it
+            for section_key in section_keys:
+                section_config = section_definitions[section_key]
+                # Check if the required model is available
+                if model_provider == 'gemini' and not self.gemini_client:
+                    logger.warning(f"Skipping section '{section_key}' - Gemini not available")
+                    failed_sections += 1
+                    continue
+                elif model_provider == 'ollama' and not self.ollama_available:
+                    logger.warning(f"Skipping section '{section_key}' - Ollama not available")
+                    failed_sections += 1
+                    continue
+
+                section_result = self.generate_section(section_key, section_config, card)
+
+                if section_result:
+                    sections[section_key] = section_result
+                    if model_provider == 'gemini':
+                        gemini_sections += 1
+                    else:
+                        ollama_sections += 1
+                    # Rate limiting between sections
+                    time.sleep(self.rate_limit)
                 else:
-                    ollama_sections += 1
-                
-                # Rate limiting between sections
-                time.sleep(self.rate_limit)
-            else:
-                failed_sections += 1
-        
+                    failed_sections += 1
+
         if not sections:
             logger.error(f"Failed to generate any sections for {card_name}")
             return None
-        
+
         # Create the complete analysis payload
         total_time = time.time() - start_time
-        
+
         analysis_data = {
             'sections': sections,
             'analyzed_at': datetime.now(UTC).isoformat(),
@@ -411,12 +444,12 @@ Style Guidelines:
             },
             'processing_time': total_time
         }
-        
+
         # Create formatted content by assembling sections
         formatted_content = self.format_sections_for_display(sections, section_definitions)
         if formatted_content:
             analysis_data['content'] = formatted_content
-        
+
         payload = {
             'uuid': card_uuid,
             'analysis': analysis_data,
@@ -430,25 +463,23 @@ Style Guidelines:
             'card_data': card,
             'has_full_content': len(sections) >= len(section_definitions) * 0.8  # 80% completion threshold
         }
-        
+
         logger.info(f"Mixed-model analysis completed for {card_name} in {total_time:.2f}s")
         logger.info(f"  Gemini sections: {gemini_sections}, Ollama sections: {ollama_sections}, Failed: {failed_sections}")
-        
+
         return payload
     
     def format_sections_for_display(self, sections: Dict, section_definitions: Dict) -> str:
-        """Format sections into a complete guide for display"""
+        """Format sections into a complete guide for display in a fixed order using SECTION_DISPLAY_ORDER and SECTION_DISPLAY_MAP"""
         ordered_content = []
-        
-        for section_key in section_definitions.keys():
+        for section_key in self.SECTION_DISPLAY_ORDER:
             if section_key in sections:
                 section_data = sections[section_key]
-                section_title = section_data.get('title', section_definitions[section_key]['title'])
+                # Use display map if present, else fallback to section definition title
+                section_title = self.SECTION_DISPLAY_MAP.get(section_key, section_data.get('title', section_definitions[section_key]['title']))
                 section_content = section_data.get('content', '')
-                
                 if section_content.strip():
                     ordered_content.append(f"## {section_title}\n\n{section_content.strip()}\n")
-        
         return "\n".join(ordered_content)
     
     def submit_analysis(self, payload: Dict) -> bool:

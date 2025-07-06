@@ -173,16 +173,6 @@
                                 {% if guide_meta.analyzed_at %}
                                     <small class="text-light">Last updated {{ guide_meta.analyzed_at[:10] }}</small>
                                 {% endif %}
-                                
-                                <!-- TL;DR Summary in Header -->
-                                {% if guide_sections.tldr %}
-                                    <div class="mt-3 p-3 bg-white bg-opacity-10 rounded">
-                                        <h6 class="mb-2 text-white"><i class="fas fa-bolt"></i> Quick Summary</h6>
-                                        <div class="small text-light">
-                                            {{ guide_sections.tldr.content | striptags | truncate(200) }}
-                                        </div>
-                                    </div>
-                                {% endif %}
                             </div>
                         </div>
                         
@@ -191,13 +181,11 @@
                         <!-- Sectioned Content -->
                         <div class="card-body" data-bs-spy="scroll" data-bs-target="#scrollspy-nav" data-bs-smooth-scroll="true">
                             {% for section_key, section_data in guide_sections.items() %}
-                                {% if section_key != 'tldr' %}
                                 <div id="section-{{ section_key }}" class="guide-section mb-4 {% if not loop.last %}border-bottom pb-4{% endif %}">
                                     <div class="markdown-content">
                                         {{ section_data.content | link_card_mentions(current_card_name) | markdown | safe }}
                                     </div>
                                 </div>
-                                {% endif %}
                             {% endfor %}
                         </div>
                         
