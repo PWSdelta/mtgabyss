@@ -69,10 +69,9 @@ class UnifiedWorker:
     gemini_total_tokens = 0
     gemini_total_cost = 0.0
 
-    def __init__(self, provider: str, model: str, batch_size: int = 5, rate_limit: float = 1.0):
+    def __init__(self, provider: str, model: str, rate_limit: float = 1.0):
         self.provider = provider.lower()
         self.model = model
-        self.batch_size = batch_size
         self.rate_limit = rate_limit
         self.processed_count = 0
         
@@ -331,6 +330,46 @@ class UnifiedWorker:
             logger.error(f"Error saving batch to database: {e}")
             return False
     
+    def save_single_to_database(self, payload: Dict) -> bool:
+        """Save a single card analysis to the database immediately"""
+        try:
+            url = f'{MTGABYSS_BASE_URL}/api/submit_work'
+            response = requests.post(
+                url,
+                json=[payload],  # Wrap single payload in list since API expects array
+                headers={'Content-Type': 'application/json'},
+                timeout=60
+            )
+            if response.status_code == 200:
+                data = response.json()
+                # Accept both list and dict-with-results
+                if isinstance(data, list):
+                    results = data
+                elif isinstance(data, dict) and 'results' in data and isinstance(data['results'], list):
+                    results = data['results']
+                else:
+                    logger.error(f"Unexpected API response: {data}")
+                    return False
+                
+                # Check if the single card was saved successfully
+                if results and len(results) > 0:
+                    result = results[0]
+                    if isinstance(result, dict) and result.get('status') == 'ok':
+                        logger.info(f"Successfully saved analysis for card {payload.get('uuid')}")
+                        return True
+                    else:
+                        logger.error(f"Failed to save card {payload.get('uuid')}: {result}")
+                        return False
+                else:
+                    logger.error("No results returned from API")
+                    return False
+            else:
+                logger.error(f"Database save failed: {response.status_code} - {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Error saving card to database: {e}")
+            return False
+    
     def send_discord_notification(self, card: Dict):
         """Send Discord notification for completed analysis"""
         if not DISCORD_WEBHOOK_URL:
@@ -384,14 +423,14 @@ class UnifiedWorker:
             print()
     
     def run(self, limit: Optional[int] = None, show_output: bool = True):
-        """Main worker loop with aggregate and per-batch Gemini cost reporting."""
+        """Main worker loop - simple: get card, process card, save card, repeat."""
         print(f"""
 MTGAbyss Unified Worker
 ======================
 Provider: {self.provider}
 Model: {self.model}
-Batch Size: {self.batch_size}
-Rate Limit: {self.rate_limit}s between batches
+Processing: One card at a time (no batching)
+Rate Limit: {self.rate_limit}s between cards
 Limit: {limit if limit else 'unlimited'}
 Database: {MTGABYSS_BASE_URL}
 Discord: {'✅' if DISCORD_WEBHOOK_URL else '❌'}
@@ -407,70 +446,54 @@ Press Ctrl+C to stop.
                     simple_log(f"Reached processing limit of {limit} cards. Exiting.")
                     break
                 
-                round_start = time.time()
-                batch_gemini_cost_before = UnifiedWorker.gemini_total_cost
+                card_start = time.time()
+                gemini_cost_before = UnifiedWorker.gemini_total_cost
                 
-                # Fetch cards
-                remaining_limit = None
-                if limit is not None:
-                    remaining_limit = min(self.batch_size, limit - self.processed_count)
-                else:
-                    remaining_limit = self.batch_size
-                
-                cards_batch = self.fetch_unreviewed_cards(remaining_limit)
+                # Fetch ONE card
+                cards_batch = self.fetch_unreviewed_cards(1)
                 
                 if not cards_batch:
-                    simple_log("No unreviewed cards available, waiting 60 seconds...")
+                    simple_log("No cards available, waiting 60 seconds...")
                     time.sleep(60)
                     continue
                 
-                # Process cards
-                batch_payload = []
-                batch_card_costs = []
-                for card in cards_batch:
-                    if limit is not None and self.processed_count >= limit:
-                        break
+                card = cards_batch[0]  # Get the single card
+                
+                # Process the card
+                payload = self.process_card(card)
+                if not payload:
+                    simple_log(f"Failed to process {card.get('name')}, skipping...")
+                    continue
+                
+                # Save immediately (single card, not batch)
+                if self.save_single_to_database(payload):
+                    self.processed_count += 1
                     
-                    payload = self.process_card(card)
-                    if payload:
-                        batch_payload.append(payload)
-                        self.processed_count += 1
-                        # Track per-card cost if Gemini
-                        if self.provider == 'gemini':
-                            card_cost = payload.get("gemini_cost_usd", 0.0)
-                            batch_card_costs.append(card_cost)
-                        # Show analysis output if requested
-                        if show_output:
-                            print("\n" + "="*80)
-                            print(f"Analysis for: {card.get('name')}")
-                            print("="*80)
-                            analysis = payload.get('analysis', {}).get('long_form', '')
-                            print(analysis[:500] + "..." if len(analysis) > 500 else analysis)
-                            print("="*80 + "\n")
-                
-                # Save batch
-                if batch_payload:
-                    if self.save_batch_to_database(batch_payload):
-                        # Send notifications
-                        for i, card in enumerate(cards_batch[:len(batch_payload)]):
-                            self.send_discord_notification(card)
-                        
-                        elapsed = time.time() - round_start
-                        # Calculate and print batch Gemini cost
-                        batch_gemini_cost_after = UnifiedWorker.gemini_total_cost
-                        batch_cost = batch_gemini_cost_after - batch_gemini_cost_before if self.provider == 'gemini' else 0.0
-                        if self.provider == 'gemini':
-                            simple_log(f"Batch Gemini API cost: ${batch_cost:.6f} (aggregate: ${UnifiedWorker.gemini_total_cost:.4f})")
-                            if batch_card_costs:
-                                for idx, card_cost in enumerate(batch_card_costs):
-                                    simple_log(f"  Card {idx+1}: ${card_cost:.6f}")
-                        simple_log(f"Completed batch of {len(batch_payload)} cards in {elapsed:.2f} seconds")
-                    else:
-                        simple_log("Failed to save batch to database")
+                    # Send notification
+                    self.send_discord_notification(card)
+                    
+                    elapsed = time.time() - card_start
+                    
+                    # Calculate and print Gemini cost for this card
+                    if self.provider == 'gemini':
+                        gemini_cost_after = UnifiedWorker.gemini_total_cost
+                        card_cost = gemini_cost_after - gemini_cost_before
+                        simple_log(f"Card Gemini API cost: ${card_cost:.6f} (total: ${UnifiedWorker.gemini_total_cost:.4f})")
+                    
+                    simple_log(f"Completed {card.get('name')} in {elapsed:.2f} seconds")
+                    
+                    # Show analysis output if requested
+                    if show_output:
+                        print("\n" + "="*80)
+                        print(f"Analysis for: {card.get('name')}")
+                        print("="*80)
+                        analysis = payload.get('analysis', {}).get('long_form', '')
+                        print(analysis[:500] + "..." if len(analysis) > 500 else analysis)
+                        print("="*80 + "\n")
                 else:
-                    simple_log("No analyses generated in this batch")
+                    simple_log(f"Failed to save {card.get('name')} to database")
                 
-                # Rate limiting
+                # Rate limiting between cards
                 if self.rate_limit > 0:
                     time.sleep(self.rate_limit)
         
@@ -493,10 +516,10 @@ Examples:
   # Use Ollama with specific model
   python unified_worker.py --provider ollama --model llama3.1:8b
   
-  # Process only 10 cards with batch size 2
-  python unified_worker.py --provider gemini --limit 10 --batch-size 2
+  # Process only 10 cards
+  python unified_worker.py --provider gemini --limit 10
   
-  # Use custom rate limiting
+  # Use custom rate limiting (wait 2 seconds between cards)
   python unified_worker.py --provider ollama --rate-limit 2.0
         """
     )
@@ -515,15 +538,10 @@ Examples:
                        default=None,
                        help='Maximum number of cards to process')
     
-    parser.add_argument('--batch-size', 
-                       type=int, 
-                       default=5,
-                       help='Number of cards to process per batch (default: 5)')
-    
     parser.add_argument('--rate-limit', 
                        type=float, 
                        default=1.0,
-                       help='Seconds to wait between batches (default: 1.0)')
+                       help='Seconds to wait between cards (default: 1.0)')
     
     parser.add_argument('--quiet', 
                        action='store_true',
@@ -565,7 +583,6 @@ Examples:
         worker = UnifiedWorker(
             provider=args.provider,
             model=args.model,
-            batch_size=args.batch_size,
             rate_limit=args.rate_limit
         )
 

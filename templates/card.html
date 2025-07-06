@@ -109,26 +109,6 @@
                     {% endif %}
                     <!-- Rulings Accordion (async loaded) -->
                     <div id="rulings-accordion" class="mt-3"></div>
-                    <!-- Recent Analyses Section (moved to sidebar) -->
-                    <div class="card mt-4">
-                        <div class="card-header bg-secondary text-white">
-                            <h5 class="mb-0">Recent Analyses</h5>
-                        </div>
-                        <ul class="list-group list-group-flush">
-                            {% for rc in recent_cards %}
-                            <li class="list-group-item d-flex align-items-center">
-                                <a href="/card/{{ rc.uuid }}" class="me-2 recent-card-popover" data-image="{{ rc.image_uris.normal if rc.image_uris and rc.image_uris.normal else url_for('static', filename='img/cardback.png') }}">
-                                    {% if rc.image_uris and rc.image_uris.normal %}
-                                        <img src="{{ rc.image_uris.normal }}" alt="{{ rc.name }}" style="width:40px; height:56px; object-fit:cover; border-radius:4px;">
-                                    {% else %}
-                                        <img src="{{ url_for('static', filename='img/cardback.png') }}" alt="No image" style="width:40px; height:56px; object-fit:cover; border-radius:4px;">
-                                    {% endif %}
-                                </a>
-                                <a href="/card/{{ rc.uuid }}" class="recent-card-popover" data-image="{{ rc.imageUris.normal if rc.imageUris and rc.imageUris.normal else url_for('static', filename='img/cardback.png') }}">{{ rc.name }}</a>
-                            </li>
-                            {% endfor %}
-                        </ul>
-                    </div>
                 </div>
 {% block scripts %}
 <script>
@@ -252,10 +232,51 @@ html {
     transform: translateY(-1px);
     box-shadow: 0 2px 4px rgba(0,0,0,0.2);
 }
+
+/* Hover effect for card thumbnails */
+.hover-shadow {
+    transition: all 0.2s ease;
+}
+
+.hover-shadow:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
 </style>
 {% endblock %}
             </div>
         </div>
+
+        <!-- Cards Mentioned in This Review - Prominently placed -->
+        {% if mentioned_cards and mentioned_cards|length > 0 %}
+        <div class="col-12 mb-4">
+            <div class="card shadow-sm">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0"><i class="fas fa-link"></i> Cards Mentioned in This Review</h5>
+                    <small class="text-light">These cards are referenced in the strategy guide below</small>
+                </div>
+                <div class="card-body">
+                    <div class="row row-cols-2 row-cols-md-4 row-cols-lg-6 g-3">
+                        {% for m in mentioned_cards %}
+                        <div class="col">
+                            <a href="/card/{{ m.uuid }}" class="text-decoration-none text-dark">
+                                <div class="card h-100 border-0 hover-shadow">
+                                    <img src="{{ m.image_uris.normal if m.image_uris and m.image_uris.normal else 'https://cards.scryfall.io/normal/back/5/5e/Magic_card_back.jpg' }}" class="card-img-top rounded" alt="{{ m.name }}" style="max-height: 100px; object-fit: contain;">
+                                    <div class="card-body p-2">
+                                        <div class="fw-bold small text-center">{{ m.name }}</div>
+                                        {% if m.prices and m.prices.usd %}
+                                            <div class="text-muted text-center" style="font-size: 0.75rem;">${{ m.prices.usd }}</div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </a>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
 
         <!-- Analysis Column -->
         <div class="col-md-8">
@@ -388,36 +409,39 @@ html {
     </div>
     -->
 
-    <!-- Cards Mentioned in This Review & Most Expensive Cards -->
+    <!-- Recent Analyses Section - Moved to bottom -->
+    {% if recent_cards and recent_cards|length > 0 %}
     <div class="row mb-5">
-        <div class="col-md-6 mb-4">
-            <div class="card shadow-sm h-100">
-                <div class="card-header bg-success text-white">
-                    <h5 class="mb-0">Cards Mentioned in This Review</h5>
+        <div class="col-12">
+            <div class="card shadow-sm">
+                <div class="card-header bg-secondary text-white">
+                    <h5 class="mb-0"><i class="fas fa-clock"></i> Recent Analyses</h5>
+                    <small class="text-light">Latest cards with strategy guides</small>
                 </div>
                 <div class="card-body">
-                    {% if mentioned_cards and mentioned_cards|length > 0 %}
-                    <div class="row row-cols-2 row-cols-md-2 g-3">
-                        {% for m in mentioned_cards %}
+                    <div class="row row-cols-2 row-cols-md-3 row-cols-lg-5 g-3">
+                        {% for rc in recent_cards %}
                         <div class="col">
-                            <a href="/card/{{ m.uuid }}" class="text-decoration-none text-dark">
-                                <div class="card h-100 border-0">
-                                    <img src="{{ m.image_uris.normal if m.image_uris and m.image_uris.normal else 'https://cards.scryfall.io/normal/back/5/5e/Magic_card_back.jpg' }}" class="card-img-top rounded" alt="{{ m.name }}" style="max-height: 120px; object-fit: contain;">
+                            <a href="/card/{{ rc.uuid }}" class="text-decoration-none text-dark">
+                                <div class="card h-100 border-0 hover-shadow">
+                                    {% if rc.image_uris and rc.image_uris.normal %}
+                                        <img src="{{ rc.image_uris.normal }}" alt="{{ rc.name }}" class="card-img-top rounded" style="max-height: 100px; object-fit: contain;">
+                                    {% else %}
+                                        <img src="{{ url_for('static', filename='img/cardback.png') }}" alt="No image" class="card-img-top rounded" style="max-height: 100px; object-fit: contain;">
+                                    {% endif %}
                                     <div class="card-body p-2">
-                                        <div class="fw-bold small text-center">{{ m.name }}</div>
+                                        <div class="fw-bold small text-center">{{ rc.name }}</div>
                                     </div>
                                 </div>
                             </a>
                         </div>
                         {% endfor %}
                     </div>
-                    {% else %}
-                        <div class="text-muted">No other cards mentioned in this review.</div>
-                    {% endif %}
                 </div>
             </div>
         </div>
-        <!-- Most Expensive Cards section removed -->
     </div>
+    {% endif %}
+
 </div>
 {% endblock %}
