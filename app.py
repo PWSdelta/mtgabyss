@@ -1,5 +1,5 @@
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response, abort
-from datetime import datetime, UTC
+from datetime import datetime
 from pymongo import MongoClient
 import os
 import logging
@@ -118,7 +118,7 @@ def bump_card_priority(uuid):
     """Set a card's mention_count very high to prioritize for regeneration."""
     mentions_histogram.update_one(
         {'uuid': uuid},
-        {'$set': {'mention_count': 9999, 'last_mentioned': datetime.now(UTC)}},
+        {'$set': {'mention_count': 9999, 'last_mentioned': datetime.now()}},
         upsert=True
     )
 
@@ -144,7 +144,7 @@ def add_to_priority_queue(uuid, reason='manual'):
                     'uuid': uuid,
                     'name': card_name,
                     'reason': reason,
-                    'added_at': datetime.now(UTC),
+                    'added_at': datetime.now(),
                     'processed': False
                 }
             },
@@ -160,7 +160,7 @@ def add_to_priority_queue(uuid, reason='manual'):
                     'name': card_name,
                     'edhrec_rank': card.get('edhrec_rank'),
                     'set': card.get('set'),
-                    'submitted_at': datetime.now(UTC),
+                    'submitted_at': datetime.now(),
                     'reason': reason
                 }
             },
@@ -331,7 +331,7 @@ def initialize_priority_queue_with_top_edhrec():
     top_cards = list(cards.aggregate(pipeline))
     priority_docs = []
     regen_docs = []
-    now = datetime.now(UTC)
+    now = datetime.now()
     for i, group in enumerate(top_cards):
         card = group["card"]
         # Insert into priority queue
@@ -868,7 +868,7 @@ def submit_priority_list():
                 'name': card_info['name'],
                 'priority_order': i + 1,
                 'has_analysis': card_info['has_analysis'],
-                'submitted_at': datetime.now(UTC),
+                'submitted_at': datetime.now(),
                 'processed': False
             })
         
@@ -924,7 +924,7 @@ def get_priority_work():
             # Mark as processed if card doesn't exist
             priority_collection.update_one(
                 {'uuid': priority_card['uuid']},
-                {'$set': {'processed': True, 'processed_at': datetime.now(UTC)}}
+                {'$set': {'processed': True, 'processed_at': datetime.now()}}
             )
             return jsonify({
                 'status': 'error',
@@ -1061,7 +1061,7 @@ def submit_work():
             update_fields['has_full_content'] = True
         # Set analyzed_at inside the analysis object, not overwriting it
         if 'analysis' in update_fields and isinstance(update_fields['analysis'], dict):
-            update_fields['analysis']['analyzed_at'] = datetime.now(UTC).isoformat()
+            update_fields['analysis']['analyzed_at'] = datetime.now().isoformat()
         try:
             # Always set status to 'public' on new/updated guides
             update_fields['status'] = 'public'
@@ -1350,7 +1350,7 @@ def submit_guide_component():
         if 'analysis' not in card:
             card['analysis'] = {
                 'sections': {},
-                'analyzed_at': datetime.now(UTC).isoformat(),
+                'analyzed_at': datetime.now().isoformat(),
                 'model_used': data.get('model_used', 'Unknown'),
                 'guide_version': '2.1_gemini_componentized'
             }
@@ -1363,7 +1363,7 @@ def submit_guide_component():
             'title': component_title,
             'content': component_content,
             'language': data.get('language', 'en'),
-            'generated_at': datetime.now(UTC).isoformat(),
+            'generated_at': datetime.now().isoformat(),
             'model_used': data.get('model_used', 'Unknown')
         }
         
@@ -1380,7 +1380,7 @@ def submit_guide_component():
             # Don't fail the component save if mention tracking fails
         
         # Update metadata
-        card['analysis']['last_updated'] = datetime.now(UTC).isoformat()
+        card['analysis']['last_updated'] = datetime.now().isoformat()
         if data.get('model_used'):
             card['analysis']['model_used'] = data['model_used']
         
@@ -1407,7 +1407,7 @@ def submit_guide_component():
                 '$set': {
                     'analysis': card['analysis'],
                     'has_analysis': len(existing_sections) > 0,
-                    'last_updated': datetime.now(UTC).isoformat(),
+                    'last_updated': datetime.now().isoformat(),
                     'status': 'public'
                 }
             }
@@ -1644,7 +1644,7 @@ def update_mentions_histogram_simple(mentioned_card_names, mentioning_card_name)
     if not mentioned_card_names:
         return
     
-    current_time = datetime.now(UTC)
+    current_time = datetime.now()
     updated_count = 0
     
     for card_name in mentioned_card_names:
@@ -1807,7 +1807,7 @@ def add_mentioned_cards_to_priority_queue(mentioned_card_names: list):
     
     try:
         priority_collection = db.priority_cards
-        current_time = datetime.now(UTC)
+        current_time = datetime.now()
         
         # Compact priority queue: remove duplicates and renumber
         compact_priority_queue()
