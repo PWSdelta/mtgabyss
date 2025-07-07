@@ -691,61 +691,71 @@ def api_stats():
 
 @app.route('/api/get_random_unreviewed', methods=['GET'])
 def get_random_unreviewed():
-    """Get cards for worker processing from the unified priority queue"""
+    """Get cards for worker processing using new EDHREC popularity-based assignment"""
     try:
         # Optional query parameters
         limit = int(request.args.get('limit', 1))  # How many cards to return
         mode = request.args.get('mode', 'full-guide')  # 'half-guide' or 'full-guide'
         
-        # Auto-refresh queue if it's getting low
-        queue_size = priority_regen_queue.count_documents({'processed': False})
-        if queue_size < 20:
-            logger.info(f"🔄 Queue low ({queue_size} cards), refreshing...")
-            refresh_priority_queue(100)
+        # NEW ASSIGNMENT LOGIC: Direct database query for EDHREC popularity-based assignment
+        # Get top 100 cards by EDHREC popularity that need work (sections < 12)
+        pipeline = [
+            {'$match': {
+                'edhrec_rank': {'$exists': True, '$ne': None},
+                '$expr': {
+                    '$lt': [
+                        {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
+                        12
+                    ]
+                }
+            }},
+            {'$sort': {'edhrec_rank': 1, 'released_at': 1}},  # Lower rank = more popular
+            {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
+            {'$sort': {'best_printing.edhrec_rank': 1}},
+            {'$limit': 100},  # Top 100 by popularity
+            {'$replaceRoot': {'newRoot': '$best_printing'}}
+        ]
         
-        # Shuffle the queue before serving work, and deduplicate by card name
-        import random
-        queue_entries = list(priority_regen_queue.find({'processed': False}))
-        random.shuffle(queue_entries)
-        seen_names = set()
-        deduped_queue = []
-        for entry in queue_entries:
-            if entry['name'] not in seen_names:
-                deduped_queue.append(entry)
-                seen_names.add(entry['name'])
-            else:
-                # Remove duplicate from the queue
-                priority_regen_queue.delete_many({'_id': entry['_id']})
-
-        # Start full-guide at position 1, half-guide at position 2 (1-based, so index 0 and 1)
-        if mode == 'half-guide':
-            skip_amount = 1
-            queue_cards = deduped_queue[skip_amount:skip_amount+limit]
-            explanation = f"half-guide: positions {skip_amount+1}-{skip_amount+limit} (shuffled, deduped)"
-        else:
-            skip_amount = 0
-            queue_cards = deduped_queue[skip_amount:skip_amount+limit]
-            explanation = f"full-guide: positions {skip_amount+1}-{skip_amount+limit} (shuffled, deduped)"
+        available_cards = list(cards.aggregate(pipeline))
         
-        if not queue_cards:
+        if not available_cards:
+            # Fall back to any cards that need work if no EDHREC cards found
+            fallback_pipeline = [
+                {'$match': {
+                    '$expr': {
+                        '$lt': [
+                            {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
+                            12
+                        ]
+                    }
+                }},
+                {'$sort': {'released_at': 1}},
+                {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
+                {'$limit': 100},
+                {'$replaceRoot': {'newRoot': '$best_printing'}}
+            ]
+            available_cards = list(cards.aggregate(fallback_pipeline))
+        
+        if not available_cards:
             return jsonify({
                 'status': 'no_cards',
-                'message': 'No unprocessed cards in priority queue',
-                'queue_info': {'mode': mode, 'explanation': explanation}
+                'message': 'No cards found that need work',
+                'queue_info': {'mode': mode, 'explanation': 'No cards with incomplete analysis'}
             }), 404
         
-        # Get full card data for each queue entry
+        # Assign cards based on mode and popularity ranking
+        if mode == 'half-guide':
+            # Half-guide gets the #100 card (least popular in top 100)
+            selected_cards = available_cards[-limit:] if len(available_cards) >= limit else available_cards[-1:]
+            explanation = f"half-guide: least popular cards from top 100 by EDHREC rank"
+        else:
+            # Full-guide gets the #1 card (most popular)
+            selected_cards = available_cards[:limit]
+            explanation = f"full-guide: most popular cards by EDHREC rank"
+        
+        # Convert to the expected format
         result_cards = []
-        for queue_entry in queue_cards:
-            card = cards.find_one({'uuid': queue_entry['uuid']})
-            if not card:
-                # Mark as processed if card doesn't exist
-                priority_regen_queue.update_one(
-                    {'uuid': queue_entry['uuid']},
-                    {'$set': {'processed': True, 'processed_at': datetime.now(UTC)}}
-                )
-                continue
-                
+        for card in selected_cards:
             card_data = {
                 'uuid': card.get('uuid'),
                 'scryfall_id': card.get('scryfall_id'),
@@ -762,35 +772,34 @@ def get_random_unreviewed():
                 'image_uris': card.get('image_uris', {}),
                 'prices': card.get('prices', {}),
                 'edhrec_rank': card.get('edhrec_rank'),
-                'priority_source': 'unified_queue',
-                'queue_reason': queue_entry.get('reason', 'unknown')
+                'priority_source': 'edhrec_popularity',
+                'queue_reason': 'popularity_based_assignment'
             }
             # Remove None values
             card_data = {k: v for k, v in card_data.items() if v is not None}
             result_cards.append(card_data)
         
-        if not result_cards:
-            return jsonify({
-                'status': 'no_cards',
-                'message': 'No valid cards found in queue entries',
-                'queue_info': {'mode': mode, 'explanation': explanation}
-            }), 404
-        
         # Log selection info
         card_names = [c['name'] for c in result_cards[:3]]
         if len(result_cards) > 3:
             card_names.append("...")
-        log_worker_action(mode, f"Queue selection", f"{', '.join(card_names)} | {explanation}")
+        
+        # Show EDHREC ranks in the log for debugging
+        ranks = [str(c.get('edhrec_rank', 'N/A')) for c in result_cards[:3]]
+        if len(result_cards) > 3:
+            ranks.append("...")
+        
+        log_worker_action(mode, f"EDHREC assignment", f"{', '.join(card_names)} | ranks: {', '.join(ranks)} | {explanation}")
 
         return jsonify({
             'status': 'success',
             'cards': result_cards,
             'returned_count': len(result_cards),
             'selection_info': {
-                'type': 'unified_priority_queue',
+                'type': 'edhrec_popularity_assignment',
                 'mode': mode,
                 'explanation': explanation,
-                'queue_size': queue_size
+                'total_available': len(available_cards)
             }
         })
         

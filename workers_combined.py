@@ -418,13 +418,17 @@ class CombinedGuideWorker:
     def fetch_card_to_process(self) -> Optional[Dict]:
         try:
             url = f'{MTGABYSS_BASE_URL}/api/get_random_unreviewed'
-            params = {'limit': 1}
+            # Pass the worker mode to get the appropriate card assignment
+            mode_param = 'half-guide' if self.mode == 'half' else 'full-guide'
+            params = {'limit': 1, 'mode': mode_param}
             response = requests.get(url, params=params, timeout=60)
             if response.status_code == 200:
                 data = response.json()
                 if data.get('status') == 'success' and data.get('cards'):
-                    logger.info(f"Got card from unified endpoint (random)")
-                    return data['cards'][0]
+                    card = data['cards'][0]
+                    edhrec_rank = card.get('edhrec_rank', 'N/A')
+                    logger.info(f"Got card from EDHREC assignment: {card.get('name')} (rank: {edhrec_rank}, mode: {mode_param})")
+                    return card
             elif response.status_code == 404:
                 logger.info("No cards available for processing")
                 return None
