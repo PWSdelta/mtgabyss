@@ -201,66 +201,54 @@ except Exception as e:
 def refresh_priority_queue(limit=100):
     """Populate the priority queue with top EDHREC cards that need work (deduplicated by card name)"""
     try:
-        # Find cards that need work, prioritized by EDHREC rank, but deduplicate by name
-        pipeline = [
-            # Match cards that need work
-            {
-                '$match': {
-                    'edhrec_rank': {'$exists': True, '$ne': None},
-                    'name': {'$ne': 'Sol Ring'},  # Skip Sol Ring
-                    '$or': [
-                        {'analysis': {'$exists': False}},
-                        {'analysis': None},
-                        {'analysis.sections': {'$exists': False}},
-                        {'analysis.sections': None},
-                        {
-                            '$expr': {
-                                '$lt': [
-                                    {
-                                        '$size': {
-                                            '$objectToArray': {
-                                                '$ifNull': ['$analysis.sections', {}]
-                                            }
-                                        }
-                                    },
-                                    12
-                                ]
-                            }
-                        }
-                    ]
-                }
-            },
-            # Sort by EDHREC rank (best first), then by release date (oldest first)
-            {'$sort': {'edhrec_rank': 1, 'released_at': 1}},
-            # Group by card name and pick the best printing (first one due to sort)
-            {
-                '$group': {
-                    '_id': '$name',
-                    'best_printing': {'$first': '$$ROOT'}
-                }
-            },
-            # Limit the number of unique cards
-            {'$limit': limit},
-            # Extract the best printing document
-            {'$replaceRoot': {'newRoot': '$best_printing'}}
-        ]
-        
-        cards_needing_work = list(cards.aggregate(pipeline))
-        
-        # Add cards to priority queue (checking for existing queue entries by name, not UUID)
+        # First, pull all cards from the priority_cards collection (manual/prio list)
+        priority_collection = db.priority_cards
+        prio_cards = list(priority_collection.find({'processed': False}))
+        prio_names = set()
         added_count = 0
         skipped_count = 0
-        
-        for card in cards_needing_work:
-            # Check if this card name is already in queue (any printing)
-            existing = priority_regen_queue.find_one({'name': card['name'], 'processed': False})
+        # Insert prio cards first (if not already in regen queue)
+        for prio in prio_cards:
+            prio_name = prio.get('name')
+            prio_names.add(prio_name)
+            existing = priority_regen_queue.find_one({'name': prio_name, 'processed': False})
             if not existing:
-                if add_to_priority_queue(card['uuid'], reason='edhrec_refresh'):
+                if add_to_priority_queue(prio['uuid'], reason='priority_list'):
                     added_count += 1
             else:
                 skipped_count += 1
-        
-        logger.info(f"🔄 Queue refresh: added {added_count} unique cards, skipped {skipped_count} already queued | total queue size: {priority_regen_queue.count_documents({'processed': False})}")
+
+
+        # Now fill with all cards that need work (sections < 12), skipping any already in prio_names
+        pipeline = [
+            {'$match': {
+                'edhrec_rank': {'$exists': True, '$ne': None},
+                '$expr': {
+                    '$lt': [
+                        {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
+                        12
+                    ]
+                }
+            }},
+            {'$sort': {'edhrec_rank': 1, 'released_at': 1}},
+            {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
+            {'$sort': {'best_printing.edhrec_rank': 1}},
+            {'$limit': limit},
+            {'$replaceRoot': {'newRoot': '$best_printing'}}
+        ]
+        cards_needing_work = list(cards.aggregate(pipeline))
+        for card in cards_needing_work:
+            if card['name'] in prio_names:
+                skipped_count += 1
+                continue
+            existing = priority_regen_queue.find_one({'name': card['name'], 'processed': False})
+            if not existing:
+                if add_to_priority_queue(card['uuid'], reason='needs_work'):
+                    added_count += 1
+            else:
+                skipped_count += 1
+
+        logger.info(f"🔄 Queue refresh: added {added_count} unique cards (prio+edhrec), skipped {skipped_count} already queued | total queue size: {priority_regen_queue.count_documents({'processed': False})}")
         return added_count
     except Exception as e:
         logger.error(f"❌ Error refreshing priority queue: {e}")
@@ -271,12 +259,13 @@ def refresh_priority_queue(limit=100):
 def delete_duplicate_cards_and_queue():
     """Remove all but the oldest printing of each card name from the main cards collection and the priority queue."""
 
-    # Remove duplicate printings from cards collection (group by name, order by released_at, keep oldest)
+    # Remove all but the oldest printing of each card name from the main cards collection
     pipeline = [
         {"$sort": {"name": 1, "released_at": 1}},
         {"$group": {
             "_id": "$name",
-            "all": {"$push": {"uuid": "$uuid", "_id": "$_id", "released_at": "$released_at"}},
+            "uuids": {"$push": "$uuid"},
+            "ids": {"$push": "$_id"},
             "count": {"$sum": 1}
         }}
     ]
@@ -285,11 +274,13 @@ def delete_duplicate_cards_and_queue():
     for group in duplicates:
         if group["count"] > 1:
             # Keep the first (oldest by released_at), remove the rest
-            to_remove = [doc["uuid"] for doc in group["all"][1:]]
-            result = cards.delete_many({"uuid": {"$in": to_remove}})
-            removed += result.deleted_count
+            to_remove_uuids = group["uuids"][1:]
+            to_remove_ids = group["ids"][1:]
+            if to_remove_uuids:
+                result = cards.delete_many({"uuid": {"$in": to_remove_uuids}})
+                removed += result.deleted_count
     if removed:
-        logger.info(f"🗑️ Removed {removed} duplicate printings from cards collection")
+        logger.info(f"🗑️ Removed {removed} duplicate printings from cards collection (kept only oldest printing per name)")
 
     # Remove duplicate printings from priority queue (group by name, order by submitted_at or priority_order, keep oldest)
     priority_collection = db.priority_cards

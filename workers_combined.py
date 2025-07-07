@@ -24,7 +24,7 @@ import os
 import logging
 import sys
 import re
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any
 
 # Try to import Gemini
@@ -409,7 +409,7 @@ class CombinedGuideWorker:
                 'title': section_title,
                 'content': content,
                 'model_used': model_name,
-                'generated_at': datetime.now(UTC).isoformat()
+                'generated_at': datetime.now(timezone.utc).isoformat()
             }
         else:
             logger.error(f"Failed to generate section '{section_key}' with {model_name}")
@@ -560,7 +560,7 @@ class CombinedGuideWorker:
                     ollama_sections = sum(1 for k in sections if self.get_model_for_section(k, self.section_definitions[k]) == 'ollama')
                     analysis_data = {
                         'sections': sections,
-                        'analyzed_at': datetime.now(UTC).isoformat(),
+                        'analyzed_at': datetime.now(timezone.utc).isoformat(),
                         'guide_version': f'{self.mode}guide_v1',
                         'model_strategy': {
                             'gemini_sections': gemini_sections,
@@ -624,7 +624,7 @@ class CombinedGuideWorker:
                 ],
                 "image": {"url": image_url},
                 "footer": {"text": f"MTGAbyss Combined Worker v1.0"},
-                "timestamp": datetime.now(UTC).isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             webhook_data = {"embeds": [embed]}
             resp = requests.post(DISCORD_WEBHOOK_URL, json=webhook_data, timeout=10)
