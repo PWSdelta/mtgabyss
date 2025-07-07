@@ -1,4 +1,5 @@
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
+from datetime import datetime
 from pymongo import MongoClient
 import os
 import logging
@@ -10,11 +11,30 @@ from time import time
 # Environment variables
 MTGABYSS_PUBLIC_URL = os.getenv('MTGABYSS_PUBLIC_URL', 'https://mtgabyss.com')
 
+
+
 app = Flask(__name__)
 client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017'))
 db = client.mtgabyss
 cards = db.cards
 mentions_histogram = db.mentions_histogram  # UUID-based mention tracking: { uuid: count }
+
+
+# Helper to bump a card's priority for regeneration (used by both API and UI)
+def bump_card_priority(uuid):
+    """Set a card's mention_count very high to prioritize for regeneration."""
+    mentions_histogram.update_one(
+        {'uuid': uuid},
+        {'$set': {'mention_count': 9999, 'last_mentioned': datetime.utcnow()}},
+        upsert=True
+    )
+
+# Hidden route to force-queue a card for regeneration by boosting its mention count
+@app.route('/card/<uuid>/regen', methods=['POST', 'GET'])
+def regen_card(uuid):
+    """Hidden endpoint to prioritize a card for regeneration by setting its mention_count very high."""
+    bump_card_priority(uuid)
+    return redirect(url_for('card_detail', uuid=uuid))
 
 # Ensure indexes for fast queries
 try:
@@ -115,7 +135,7 @@ def search():
         # Get and sort in Python to avoid MongoDB sort on string/NaN values
         results = list(cards.find({
             'name': {'$regex': query, '$options': 'i'},
-            'has_full_content': True,  # Only show cards with complete analysis
+            'status': 'public',  # Show all published guides (lite or full)
         }).limit(30))
         import math
         def price_usd(card):
@@ -131,7 +151,7 @@ def search():
     else:
         # Get 30 random English cards with full content and normal image, then sort by prices.usd descending
         results = list(cards.aggregate([
-            {'$match': {'has_full_content': True}},  # Only cards with complete analysis
+            {'$match': {'status': 'public'}},  # Show all published guides (lite or full)
             {'$sample': {'size': 30}}
         ]))
         import math
@@ -155,12 +175,12 @@ def card_detail(uuid):
         card['category'] = 'mtg'
     # Get 5 most recent analyzed cards (excluding this one)
     recent_cards = list(cards.find(
-        {'has_full_content': True, 'uuid': {'$ne': uuid}}  # Only cards with complete analysis
+        {'status': 'public', 'uuid': {'$ne': uuid}}  # Only cards with published guides
     ).sort([('analysis.analyzed_at', -1)]).limit(5))
     # Get 6 random cards with full content and image, not this one, for recommendations
     rec_cards = list(cards.aggregate([
         {'$match': {
-            'has_full_content': True,  # Only cards with complete analysis
+            'status': 'public',  # Only cards with published guides
             'image_uris.normal': {'$exists': True},
             'uuid': {'$ne': uuid}
         }},
@@ -175,7 +195,7 @@ def card_detail(uuid):
             # Only include cards with full content analysis
             found_cards = list(cards.find({
                 'name': {'$in': mention_names},
-                'has_full_content': True  # Only cards with complete analysis
+                'status': 'public'  # Only cards with published guides
             }, {'uuid': 1, 'name': 1, 'image_uris.normal': 1, 'prices': 1}))
             # Unique by name, pick highest price (world avg) per name
             card_by_name = {}
@@ -271,7 +291,7 @@ def gallery():
     """Scrolling gallery page"""
     # Show only cards with full content analysis and art_crop images
     reviewed_cards = cards.find({
-        'has_full_content': True
+        'status': 'public'
     }).limit(60)
     return render_template('gallery.html', cards=reviewed_cards)
 
@@ -279,7 +299,7 @@ def gallery():
 def random_card_redirect():
     # Only pick from cards with full content analysis
     cursor = cards.aggregate([
-        {'$match': {'has_full_content': True}},
+        {'$match': {'status': 'public'}},
         {'$sample': {'size': 1}}
     ])
     card = next(cursor, None)
@@ -726,6 +746,8 @@ def submit_work():
         if 'analysis' in update_fields and isinstance(update_fields['analysis'], dict):
             update_fields['analysis']['analyzed_at'] = datetime.utcnow().isoformat()
         try:
+            # Always set status to 'public' on new/updated guides
+            update_fields['status'] = 'public'
             cards.update_one(
                 {'uuid': entry['uuid']},
                 {'$set': update_fields},
@@ -838,22 +860,46 @@ def fetch_guide_component():
                 'status': 'no_work',
                 'message': 'Card analysis is complete'
             }), 204
-        
+
         # Return component work specification
-        component_spec = {
-            'status': 'work_available',
-            'destination': {
-                'uuid': card_needing_work['uuid'],
-                'name': card_needing_work['name'],
-                'type': 'mtg_card'
-            },
-            'component': {
-                'type': missing_section,
-                'title': GUIDE_SECTIONS.get(missing_section, {}).get('title', missing_section),
-                'prompt_template': GUIDE_SECTIONS.get(missing_section, {}).get('prompt', ''),
-                'language': 'en'  # Default to English, could be parameterized
-            },
-            'context': {
+
+        # --- FULL CARD OBJECT PASSING LOGIC ---
+        # Model selection logic
+        requested_model = request.args.get('model')
+        available_models = ['llama3.1:latest', 'gemini-pro', 'gpt-4o', 'gpt-4-turbo']
+        import random
+        if requested_model == 'all':
+            models_to_use = available_models
+        elif requested_model == 'random':
+            models_to_use = [random.choice(available_models)]
+        elif requested_model in available_models:
+            models_to_use = [requested_model]
+        else:
+            models_to_use = ['llama3.1:latest']
+
+        def can_use_full_card(model_name):
+            return model_name in ['llama3.1:latest', 'gpt-4o', 'gpt-4-turbo']
+
+        full_card_obj = dict(card_needing_work)
+        full_card_obj.pop('_id', None)
+
+        model_contexts = []
+        for model in models_to_use:
+            # Context chaining: gather all previous section outputs in guide order
+            chained_sections = []
+            if card_needing_work.get('analysis', {}).get('sections'):
+                for section_key in GUIDE_SECTIONS.keys():
+                    if section_key == missing_section:
+                        break
+                    section_data = card_needing_work['analysis']['sections'].get(section_key)
+                    if section_data and section_data.get('content'):
+                        chained_sections.append({
+                            'section': section_key,
+                            'title': section_data.get('title', GUIDE_SECTIONS[section_key]['title']),
+                            'content': section_data['content']
+                        })
+
+            context = {
                 'card_data': {
                     'uuid': card_needing_work.get('uuid'),
                     'name': card_needing_work.get('name'),
@@ -866,11 +912,34 @@ def fetch_guide_component():
                     'rarity': card_needing_work.get('rarity', '')
                 },
                 'existing_sections': list(existing_sections),
-                'total_sections_needed': len(GUIDE_SECTIONS)
+                'total_sections_needed': len(GUIDE_SECTIONS),
+                'chained_sections': chained_sections
             }
+            if can_use_full_card(model):
+                context['full_card'] = full_card_obj
+            model_contexts.append({
+                'model': model,
+                'context': context
+            })
+
+        component_spec = {
+            'status': 'work_available',
+            'destination': {
+                'uuid': card_needing_work['uuid'],
+                'name': card_needing_work['name'],
+                'type': 'mtg_card'
+            },
+            'component': {
+                'type': missing_section,
+                'title': GUIDE_SECTIONS.get(missing_section, {}).get('title', missing_section),
+                'prompt_template': GUIDE_SECTIONS.get(missing_section, {}).get('prompt', ''),
+                'language': 'en',
+                'models': models_to_use
+            },
+            'contexts': model_contexts if len(model_contexts) > 1 else model_contexts[0]
         }
-        
-        logger.info(f"Provided component work: {missing_section} for card {card_needing_work['name']}")
+
+        logger.info(f"Provided component work: {missing_section} for card {card_needing_work['name']} (models: {models_to_use})")
         return jsonify(component_spec)
         
     except Exception as e:
@@ -880,6 +949,41 @@ def fetch_guide_component():
             'message': f'Server error: {str(e)}'
         }), 500
 
+@app.route('/api/getwork', methods=['GET'])
+def api_getwork():
+    """
+    Returns a single card for worker processing.
+    Prioritizes cards that are unreviewed, missing sections, or need reprocessing.
+    """
+    from flask import jsonify
+
+    # Use the correct collection and section keys
+    card = None
+
+    # Get required section keys from GUIDE_SECTIONS
+    required_sections = list(GUIDE_SECTIONS.keys())
+
+    # 1. Try to find a card with no analysis at all
+    card = cards.find_one({"analysis": {"$exists": False}})
+    if not card:
+        # 2. Try to find a card with incomplete analysis (missing required sections)
+        card = cards.find_one({
+            "$or": [
+                {"analysis": {"$exists": False}},
+                {"analysis.sections": {"$exists": False}},
+                {"analysis.sections": {"$not": {"$all": required_sections}}}
+            ]
+        })
+    if not card:
+        # 3. Fallback: get any card that is not fully reviewed
+        card = cards.find_one({"has_full_content": {"$ne": True}})
+
+    if card:
+        card.pop('_id', None)
+        return jsonify({"status": "ok", "card": card})
+    else:
+        return jsonify({"status": "empty", "card": None})
+
 @app.route('/api/submit_guide_component', methods=['POST'])
 def submit_guide_component():
     """
@@ -888,6 +992,14 @@ def submit_guide_component():
     """
     try:
         data = request.json
+        # Debug: Log incoming payload and component_type
+        import json
+        logger.info(f"/api/submit_guide_component received: component_type={data.get('component_type')} payload={json.dumps(data)[:500]}")
+
+        # Safeguard: Prevent accidental overwrite with generic 'section' key
+        if data.get('component_type') == 'section':
+            logger.warning(f"Rejected component_type='section' for card {data.get('uuid')}. Payload: {json.dumps(data)[:500]}")
+            return jsonify({'status': 'error', 'message': 'Invalid component_type: section'}), 400
         if not data:
             return jsonify({'status': 'error', 'message': 'No data provided'}), 400
         
@@ -967,13 +1079,15 @@ def submit_guide_component():
             logger.info(f"Partial analysis updated for {card['name']} ({missing_count} sections remaining)")
         
         # Save to database
+        # Always set status to 'public' on new/updated guides
         cards.update_one(
             {'uuid': uuid},
             {
                 '$set': {
                     'analysis': card['analysis'],
                     'has_analysis': len(existing_sections) > 0,
-                    'last_updated': datetime.utcnow().isoformat()
+                    'last_updated': datetime.utcnow().isoformat(),
+                    'status': 'public'
                 }
             }
         )
@@ -1118,7 +1232,13 @@ GUIDE_SECTIONS = {
     },
     "advanced_techniques": {
         "title": "Advanced Play Techniques",
-        "prompt": "Cover advanced techniques, pro tips, and high-level play considerations for [[{card_name}]]. Include expert-level insights and optimization strategies."
+        "prompt": (
+            "Synthesize all previous sections to deliver an advanced, expert-level analysis of [[{card_name}]]. "
+            "Draw on the card's overview, mechanics, strategic applications, deckbuilding, format analysis, gameplay scenarios, historical context, flavor, and budget considerations. "
+            "Provide pro tips, high-level play techniques, and optimization strategies that only experienced players would know. "
+            "Highlight subtle interactions, meta-relevant tricks, and nuanced insights that go beyond the basics. "
+            "Make this section stand out as the most in-depth and impressive part of the guide."
+        )
     },
     "common_mistakes": {
         "title": "Common Mistakes and Pitfalls",
@@ -1126,10 +1246,36 @@ GUIDE_SECTIONS = {
     },
     "conclusion": {
         "title": "Final Assessment",
-        "prompt": "Provide a final assessment and summary of [[{card_name}]]'s overall value, role in Magic, and recommendations for players considering using it."
+        "prompt": (
+            "Write a final assessment and summary of [[{card_name}]] as a Magic: The Gathering card. "
+            "Synthesize and reference the most important points from all previous sections, especially the advanced techniques. "
+            "Offer a clear, actionable recommendation for players considering this card, and reflect on its overall value and role in the game."
+        )
     }
 }
 
+
+
+# /api/request_guide endpoint: bumps priority and redirects to /random
+@app.route('/api/request_guide', methods=['POST'])
+def request_guide():
+    data = request.get_json()
+    card_uuid = data.get('uuid')
+    if not card_uuid:
+        return jsonify({'status': 'error', 'message': 'Missing uuid'}), 400
+
+    bump_card_priority(card_uuid)
+
+    return jsonify({
+        'status': 'success',
+        'uuid': card_uuid,
+        'message': (
+            "Your guide request has been summoned! Our Planeswalkers are on the job—"
+            "check back soon for your card’s analysis. In the meantime, you’ve been redirected "
+            "to a random card to explore more Magic strategy."
+        ),
+        'redirect_url': '/random'
+    }), 200
 
 # --- SITEMAP LOGIC ---
 
@@ -1155,17 +1301,11 @@ def sitemap_xml():
 
 # Helper functions for backward compatibility with guide formats
 def is_sectioned_guide(analysis_data):
-    """Check if this is a new sectioned guide or old monolithic format (robust to new worker output)"""
-    # Accept if 'sections' is a dict and has at least 3 keys (for new worker)
+    """Always treat as sectioned guide if 'sections' is a dict (removes 3-section minimum and legacy check)"""
     if not analysis_data:
         return False
     sections = analysis_data.get('sections')
-    if isinstance(sections, dict) and len(sections) >= 3:
-        return True
-    # Accept if 'guide_version' startswith '2.' (legacy sectioned)
-    if analysis_data.get('guide_version', '').startswith('2.'):
-        return True
-    return False
+    return isinstance(sections, dict) and len(sections) > 0
 
 def get_guide_content(analysis_data, language='en'):
     """Get guide content in the appropriate format"""
@@ -1182,7 +1322,10 @@ def get_guide_content(analysis_data, language='en'):
         
         sections = analysis_data.get(sections_key, {})
         formatted_content = analysis_data.get(content_key) or analysis_data.get(old_content_key, '')
-        
+        # If content is missing but sections exist, assemble from sections
+        if not formatted_content and sections:
+            formatted_content = format_guide_for_display(sections)
+
         guide_meta = {
             'type': 'sectioned',
             'version': analysis_data.get('guide_version', '2.0'),
@@ -1190,7 +1333,6 @@ def get_guide_content(analysis_data, language='en'):
             'model_used': analysis_data.get('model_used', 'Unknown'),
             'analyzed_at': analysis_data.get('analyzed_at')
         }
-        
         return sections, formatted_content, guide_meta
     else:
         # Legacy format: return as single section
@@ -1512,7 +1654,10 @@ def compact_priority_queue():
     """Remove duplicates and renumber priority queue for efficiency"""
     try:
         priority_collection = db.priority_cards
-        
+
+        # Rarity order for sorting
+        RARITY_ORDER = {'mythic': 0, 'rare': 1, 'uncommon': 2, 'common': 3}
+
         # Get all unique cards, keeping the one with lowest priority_order (highest priority)
         pipeline = [
             {'$sort': {'priority_order': 1}},  # Sort by priority (lowest first)
@@ -1525,22 +1670,27 @@ def compact_priority_queue():
             {'$replaceRoot': {'newRoot': '$doc'}},
             {'$sort': {'priority_order': 1}}
         ]
-        
+
         unique_cards = list(priority_collection.aggregate(pipeline))
-        
         if not unique_cards:
             return
-        
+
+        # Fetch rarity for each card and sort by rarity, then by priority_order
+        def get_rarity_sort_key(card_uuid):
+            card = cards.find_one({'uuid': card_uuid}, {'rarity': 1})
+            rarity = card.get('rarity', '').lower() if card else ''
+            return RARITY_ORDER.get(rarity, 99)
+
+        unique_cards.sort(key=lambda c: (get_rarity_sort_key(c['uuid']), c.get('priority_order', 9999)))
+
         # Clear the collection and re-insert with sequential numbering
         priority_collection.delete_many({})
-        
         for i, card in enumerate(unique_cards, start=1):
             card['priority_order'] = i
             card.pop('_id', None)  # Remove old _id
             priority_collection.insert_one(card)
-        
-        logger.info(f"Compacted priority queue: {len(unique_cards)} unique cards, renumbered 1-{len(unique_cards)}")
-        
+
+        logger.info(f"Compacted priority queue: {len(unique_cards)} unique cards, renumbered 1-{len(unique_cards)}, prioritized by rarity")
     except Exception as e:
         logger.error(f"Error compacting priority queue: {e}")
 

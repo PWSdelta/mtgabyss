@@ -56,7 +56,16 @@
                     >
                 </div>
                 <div class="card-body" id="card-details-panel">
-                    <h4 class="card-title mb-2">{{ card.name }}</h4>
+                    <h4 class="card-title mb-2">{{ card.name }}
+                      {% if card.analysis and card.analysis.sections %}
+                        {% set section_count = card.analysis.sections|length %}
+                        {% if section_count >= 12 %}
+                          <span class="badge bg-success ms-2" style="font-size:0.7em;vertical-align:middle;">Full Guide</span>
+                        {% elif section_count >= 6 %}
+                          <span class="badge bg-info ms-2" style="font-size:0.7em;vertical-align:middle;">Lite Guide</span>
+                        {% endif %}
+                      {% endif %}
+                    </h4>
                     <div class="mb-2">
                         <span class="badge bg-secondary me-1">{{ card.set_name or card.set|upper or "Unknown Set" }}</span>
                         <span class="badge bg-info text-dark">{{ card.rarity|capitalize }}</span>
@@ -178,15 +187,115 @@
                         
 
                         
-                        <!-- Sectioned Content -->
+                        <!-- Sectioned Content: Always show all canonical sections in order, skipping missing ones -->
                         <div class="card-body" data-bs-spy="scroll" data-bs-target="#scrollspy-nav" data-bs-smooth-scroll="true">
-                            {% for section_key, section_data in guide_sections.items() %}
-                                <div id="section-{{ section_key }}" class="guide-section mb-4 {% if not loop.last %}border-bottom pb-4{% endif %}">
+                            {# Robustly select the section data from any possible variable #}
+                            {% set sections = None %}
+                            {% if card.analysis and card.analysis.sections %}
+                                {% set sections = card.analysis.sections %}
+                            {% elif guide and guide.sections %}
+                                {% set sections = guide.sections %}
+                            {% elif guide and guide %}
+                                {% set sections = guide %}
+                            {% elif card.guide and card.guide.sections %}
+                                {% set sections = card.guide.sections %}
+                            {% endif %}
+                            {% if sections and sections.tldr %}
+                                <div id="section-tldr" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">TL;DR Summary</h5>
                                     <div class="markdown-content">
-                                        {{ section_data.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                        {{ sections.tldr.content | link_card_mentions(current_card_name) | markdown | safe }}
                                     </div>
                                 </div>
-                            {% endfor %}
+                            {% endif %}
+                            {% if sections and sections.mechanics %}
+                                <div id="section-mechanics" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">Card Mechanics & Interactions</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.mechanics.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if sections and sections.strategic %}
+                                <div id="section-strategic" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">Strategic Applications</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.strategic.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if sections and sections.advanced %}
+                                <div id="section-advanced" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">Advanced Techniques</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.advanced.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if sections and sections.mistakes %}
+                                <div id="section-mistakes" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">Common Mistakes</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.mistakes.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if sections and sections.conclusion %}
+                                <div id="section-conclusion" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">Conclusion</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.conclusion.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if sections and sections.deckbuilding %}
+                                <div id="section-deckbuilding" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">Deckbuilding & Synergies</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.deckbuilding.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if sections and sections.format %}
+                                <div id="section-format" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">Format Roles</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.format.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if sections and sections.scenarios %}
+                                <div id="section-scenarios" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">Key Scenarios</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.scenarios.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if sections and sections.history %}
+                                <div id="section-history" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">History & Meta</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.history.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if sections and sections.flavor %}
+                                <div id="section-flavor" class="guide-section mb-4 border-bottom pb-4">
+                                    <h5 class="section-title mb-3">Flavor & Lore</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.flavor.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if sections and sections.budget %}
+                                <div id="section-budget" class="guide-section mb-4">
+                                    <h5 class="section-title mb-3">Budget/Alternatives</h5>
+                                    <div class="markdown-content">
+                                        {{ sections.budget.content | link_card_mentions(current_card_name) | markdown | safe }}
+                                    </div>
+                                </div>
+                            {% endif %}
                         </div>
                         
                         <!-- Native Language Guide (if available) -->

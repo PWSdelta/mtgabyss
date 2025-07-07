@@ -555,11 +555,11 @@ class MixedModelWorker:
             url = f'{MTGABYSS_BASE_URL}/api/submit_guide_component'
             payload = {
                 'uuid': card_uuid,
-                'section_key': section_key,
-                'section_data': section_result,
+                'component_type': section_key,  # Use canonical section key (e.g. 'tldr', 'mechanics_breakdown', etc.)
+                'component_content': section_result.get('content', ''),
+                'component_title': section_result.get('title', section_key),
                 'card_data': card,
-                'component_type': 'section',  # Required by backend
-                'component_content': section_result.get('content', '')  # Required by backend
+                'status': 'public'  # Always set status to public
             }
             response = requests.post(url, json=payload, timeout=60)
             if response.status_code == 200:
