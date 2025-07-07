@@ -697,44 +697,69 @@ def get_random_unreviewed():
         limit = int(request.args.get('limit', 1))  # How many cards to return
         mode = request.args.get('mode', 'full-guide')  # 'half-guide' or 'full-guide'
         
-        # NEW ASSIGNMENT LOGIC: Direct database query for EDHREC popularity-based assignment
-        # Get top 100 cards by EDHREC popularity that need work (sections < 12)
-        pipeline = [
-            {'$match': {
-                'edhrec_rank': {'$exists': True, '$ne': None},
-                '$expr': {
-                    '$lt': [
-                        {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
-                        12
-                    ]
-                }
-            }},
-            {'$sort': {'edhrec_rank': 1, 'released_at': 1}},  # Lower rank = more popular
-            {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
-            {'$sort': {'best_printing.edhrec_rank': 1}},
-            {'$limit': 100},  # Top 100 by popularity
-            {'$replaceRoot': {'newRoot': '$best_printing'}}
-        ]
+        # FRESH QUERY LOGIC: Regenerate the database query each time to account for newly completed cards
+        # Different logic for half-guide vs full-guide to ensure they get different cards
+        
+        if mode == 'half-guide':
+            # Half-guide: Get cards that need work, prioritize LESS popular cards (higher EDHREC rank)
+            pipeline = [
+                {'$match': {
+                    'edhrec_rank': {'$exists': True, '$ne': None},
+                    '$expr': {
+                        '$lt': [
+                            {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
+                            6  # Half-guide needs 6 sections
+                        ]
+                    }
+                }},
+                {'$sort': {'edhrec_rank': -1, 'released_at': 1}},  # Higher rank = less popular (REVERSE ORDER)
+                {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
+                {'$sort': {'best_printing.edhrec_rank': -1}},  # Sort by rank descending (least popular first)
+                {'$limit': 50},  # Take 50 least popular cards that need work
+                {'$replaceRoot': {'newRoot': '$best_printing'}}
+            ]
+            explanation = f"half-guide: least popular cards that need 6-section guides"
+        else:
+            # Full-guide: Get cards that need work, prioritize MORE popular cards (lower EDHREC rank)
+            pipeline = [
+                {'$match': {
+                    'edhrec_rank': {'$exists': True, '$ne': None},
+                    '$expr': {
+                        '$lt': [
+                            {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
+                            12  # Full-guide needs 12 sections
+                        ]
+                    }
+                }},
+                {'$sort': {'edhrec_rank': 1, 'released_at': 1}},  # Lower rank = more popular
+                {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
+                {'$sort': {'best_printing.edhrec_rank': 1}},  # Sort by rank ascending (most popular first)
+                {'$limit': 50},  # Take 50 most popular cards that need work
+                {'$replaceRoot': {'newRoot': '$best_printing'}}
+            ]
+            explanation = f"full-guide: most popular cards that need 12-section guides"
         
         available_cards = list(cards.aggregate(pipeline))
         
         if not available_cards:
             # Fall back to any cards that need work if no EDHREC cards found
+            section_target = 6 if mode == 'half-guide' else 12
             fallback_pipeline = [
                 {'$match': {
                     '$expr': {
                         '$lt': [
                             {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
-                            12
+                            section_target
                         ]
                     }
                 }},
                 {'$sort': {'released_at': 1}},
                 {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
-                {'$limit': 100},
+                {'$limit': 50},
                 {'$replaceRoot': {'newRoot': '$best_printing'}}
             ]
             available_cards = list(cards.aggregate(fallback_pipeline))
+            explanation = f"{mode}: fallback cards that need {section_target} sections"
         
         if not available_cards:
             return jsonify({
@@ -743,15 +768,8 @@ def get_random_unreviewed():
                 'queue_info': {'mode': mode, 'explanation': 'No cards with incomplete analysis'}
             }), 404
         
-        # Assign cards based on mode and popularity ranking
-        if mode == 'half-guide':
-            # Half-guide gets the #100 card (least popular in top 100)
-            selected_cards = available_cards[-limit:] if len(available_cards) >= limit else available_cards[-1:]
-            explanation = f"half-guide: least popular cards from top 100 by EDHREC rank"
-        else:
-            # Full-guide gets the #1 card (most popular)
-            selected_cards = available_cards[:limit]
-            explanation = f"full-guide: most popular cards by EDHREC rank"
+        # Take the first available card (since query is already sorted appropriately)
+        selected_cards = available_cards[:limit]
         
         # Convert to the expected format
         result_cards = []
@@ -772,34 +790,35 @@ def get_random_unreviewed():
                 'image_uris': card.get('image_uris', {}),
                 'prices': card.get('prices', {}),
                 'edhrec_rank': card.get('edhrec_rank'),
-                'priority_source': 'edhrec_popularity',
-                'queue_reason': 'popularity_based_assignment'
+                'priority_source': 'edhrec_fresh_query',
+                'queue_reason': 'fresh_popularity_assignment'
             }
             # Remove None values
             card_data = {k: v for k, v in card_data.items() if v is not None}
             result_cards.append(card_data)
         
-        # Log selection info
-        card_names = [c['name'] for c in result_cards[:3]]
+        # Log selection info with current section counts
+        card_info = []
+        for i, c in enumerate(result_cards[:3]):
+            # Get actual section count from the selected card data
+            original_card = selected_cards[i]
+            current_sections = len(original_card.get('analysis', {}).get('sections', {}))
+            card_info.append(f"{c['name']} (rank:{c.get('edhrec_rank', 'N/A')}, sections:{current_sections})")
         if len(result_cards) > 3:
-            card_names.append("...")
+            card_info.append("...")
         
-        # Show EDHREC ranks in the log for debugging
-        ranks = [str(c.get('edhrec_rank', 'N/A')) for c in result_cards[:3]]
-        if len(result_cards) > 3:
-            ranks.append("...")
-        
-        log_worker_action(mode, f"EDHREC assignment", f"{', '.join(card_names)} | ranks: {', '.join(ranks)} | {explanation}")
+        log_worker_action(mode, f"Fresh EDHREC query", f"{', '.join(card_info)} | {explanation} | pool: {len(available_cards)}")
 
         return jsonify({
             'status': 'success',
             'cards': result_cards,
             'returned_count': len(result_cards),
             'selection_info': {
-                'type': 'edhrec_popularity_assignment',
+                'type': 'fresh_edhrec_query',
                 'mode': mode,
                 'explanation': explanation,
-                'total_available': len(available_cards)
+                'total_available': len(available_cards),
+                'query_timestamp': datetime.now().isoformat()
             }
         })
         
