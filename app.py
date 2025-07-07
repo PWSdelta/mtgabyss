@@ -1,12 +1,95 @@
-from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
-from datetime import datetime
+from flask import Flask, render_template, jsonify, request, redirect, url_for, Response, abort
+from datetime import datetime, UTC
 from pymongo import MongoClient
 import os
 import logging
 import markdown
 import re
-from datetime import datetime
+import math
+import random
 from time import time
+
+# Configure beautiful logging with elapsed time tracking
+import time as time_module
+_start_time = time_module.time()
+
+def elapsed_time():
+    """Get elapsed time since startup in a readable format"""
+    elapsed = time_module.time() - _start_time
+    if elapsed < 60:
+        return f"+{elapsed:.1f}s"
+    elif elapsed < 3600:
+        return f"+{elapsed/60:.1f}m"
+    else:
+        return f"+{elapsed/3600:.1f}h"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)-8s | %(name)-15s | %(message)s'
+)
+logger = logging.getLogger('MTGAbyss')
+
+# Set up colored logging for console (if available)
+try:
+    import colorlog
+    console_handler = colorlog.StreamHandler()
+    console_handler.setFormatter(colorlog.ColoredFormatter(
+        '%(log_color)s%(levelname)-8s | %(name)-15s | %(message)s',
+        log_colors={
+            'DEBUG': 'cyan',
+            'INFO': 'green',
+            'WARNING': 'yellow',
+            'ERROR': 'red',
+            'CRITICAL': 'bold_red',
+        }
+    ))
+    logger.handlers.clear()
+    logger.addHandler(console_handler)
+    logger.info("🎨 Colored logging enabled")
+except ImportError:
+    logger.info("📝 Standard logging active (install colorlog for colors)")
+
+def log_card_action(action, card_name, uuid, extra_info=""):
+    """Helper for consistent card-related logging"""
+    card_display = f"'{card_name}' ({uuid[:8]}...)" if card_name else f"({uuid[:8]}...)"
+    if extra_info:
+        logger.info(f"🃏 {action}: {card_display} | {extra_info} | {elapsed_time()}")
+    else:
+        logger.info(f"🃏 {action}: {card_display} | {elapsed_time()}")
+
+def log_worker_action(worker_type, action, details=""):
+    """Helper for worker-related logging"""
+    if details:
+        logger.info(f"⚙️  [{worker_type.upper()}] {action} | {details} | {elapsed_time()}")
+    else:
+        logger.info(f"⚙️  [{worker_type.upper()}] {action} | {elapsed_time()}")
+
+def log_api_stats(endpoint, status, details=""):
+    """Helper for API endpoint logging"""
+    status_emoji = "✅" if status == "success" else "❌" if status == "error" else "⚠️"
+    if details:
+        logger.info(f"{status_emoji} API {endpoint} → {status.upper()} | {details} | {elapsed_time()}")
+    else:
+        logger.info(f"{status_emoji} API {endpoint} → {status.upper()} | {elapsed_time()}")
+
+def log_operation_timing(operation_name, start_time):
+    """Helper for logging operation duration"""
+    duration = time_module.time() - start_time
+    if duration < 1:
+        duration_str = f"{duration*1000:.0f}ms"
+    else:
+        duration_str = f"{duration:.1f}s"
+    logger.info(f"⏱️  {operation_name} completed in {duration_str} | {elapsed_time()}")
+
+# Helper to bump a card's priority for regeneration (used by both API and UI)
+def slugify(text):
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9]+', '-', text)
+    text = re.sub(r'-+', '-', text)
+    return text.strip('-')
+# Web routes
+
+
 
 # Environment variables
 MTGABYSS_PUBLIC_URL = os.getenv('MTGABYSS_PUBLIC_URL', 'https://mtgabyss.com')
@@ -18,6 +101,16 @@ client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017'))
 db = client.mtgabyss
 cards = db.cards
 mentions_histogram = db.mentions_histogram  # UUID-based mention tracking: { uuid: count }
+priority_regen_queue = db.priority_regen_queue  # Simple priority queue for /regen requests
+
+# Simple worker position tracking to prevent same-card pulls
+_worker_positions = {
+    'full-guide': 0,
+    'half-guide': 10  # Start with offset
+}
+
+# Prime numbers for jiggling queue positions
+_prime_offsets = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
 
 
 # Helper to bump a card's priority for regeneration (used by both API and UI)
@@ -25,15 +118,65 @@ def bump_card_priority(uuid):
     """Set a card's mention_count very high to prioritize for regeneration."""
     mentions_histogram.update_one(
         {'uuid': uuid},
-        {'$set': {'mention_count': 9999, 'last_mentioned': datetime.utcnow()}},
+        {'$set': {'mention_count': 9999, 'last_mentioned': datetime.now(UTC)}},
         upsert=True
     )
 
-# Hidden route to force-queue a card for regeneration by boosting its mention count
+# Helper function to add cards to the unified priority queue
+def add_to_priority_queue(uuid, reason='manual'):
+    """Add a card to the unified priority queue for processing"""
+    try:
+        # Check if card exists
+        card = cards.find_one({'uuid': uuid}, {'uuid': 1, 'name': 1, 'edhrec_rank': 1, 'set': 1})
+        if not card:
+            return False
+        card_name = card.get('name', 'Unknown')
+        # Check if this card name is already in queue (any printing)
+        existing = priority_regen_queue.find_one({'name': card_name, 'processed': False})
+        if existing:
+            logger.debug(f"🔁 Skipping {card_name} - already in queue as {existing['uuid'][:8]}...")
+            return False
+        # Add to priority queue (or update if already exists)
+        priority_regen_queue.update_one(
+            {'uuid': uuid},
+            {
+                '$set': {
+                    'uuid': uuid,
+                    'name': card_name,
+                    'reason': reason,
+                    'added_at': datetime.now(UTC),
+                    'processed': False
+                }
+            },
+            upsert=True
+        )
+        # Also add to to_regenerate collection
+        to_regen_collection = db.to_regenerate
+        to_regen_collection.update_one(
+            {'uuid': uuid},
+            {
+                '$set': {
+                    'uuid': uuid,
+                    'name': card_name,
+                    'edhrec_rank': card.get('edhrec_rank'),
+                    'set': card.get('set'),
+                    'submitted_at': datetime.now(UTC),
+                    'reason': reason
+                }
+            },
+            upsert=True
+        )
+        logger.info(f"🎯 Added to priority queue and to_regenerate: '{card_name}' ({uuid[:8]}...) | reason: {reason}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Error adding {uuid} to priority queue: {e}")
+        return False
+
+# Hidden route to force-queue a card for regeneration
 @app.route('/card/<uuid>/regen', methods=['POST', 'GET'])
 def regen_card(uuid):
-    """Hidden endpoint to prioritize a card for regeneration by setting its mention_count very high."""
-    bump_card_priority(uuid)
+    """Hidden endpoint to add a card to the unified priority queue for regeneration."""
+    add_to_priority_queue(uuid, reason='manual_regen')
     return redirect(url_for('card_detail', uuid=uuid))
 
 # Ensure indexes for fast queries
@@ -43,15 +186,195 @@ try:
     # UUID-based histogram indexes
     mentions_histogram.create_index('uuid', unique=True)
     mentions_histogram.create_index([('mention_count', -1), ('last_mentioned', -1)])  # For fast high-count lookups
+    # EDHREC indexes for popularity-based prioritization
+    cards.create_index('edhrec_rank')  # Lower rank = more popular
+    cards.create_index('edhrec_popularity')  # Higher popularity = more popular
+    # Priority queue indexes
+    priority_regen_queue.create_index('uuid', unique=True)
+    priority_regen_queue.create_index('processed')
+    priority_regen_queue.create_index('added_at')
+    logger.info("📊 Database indexes created successfully")
 except Exception as e:
-    print(f"Could not create MongoDB indexes: {e}")
+    logger.error(f"❌ Could not create MongoDB indexes: {e}")
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Function to refresh the priority queue with EDHREC-based cards
+def refresh_priority_queue(limit=100):
+    """Populate the priority queue with top EDHREC cards that need work (deduplicated by card name)"""
+    try:
+        # Find cards that need work, prioritized by EDHREC rank, but deduplicate by name
+        pipeline = [
+            # Match cards that need work
+            {
+                '$match': {
+                    'edhrec_rank': {'$exists': True, '$ne': None},
+                    'name': {'$ne': 'Sol Ring'},  # Skip Sol Ring
+                    '$or': [
+                        {'analysis': {'$exists': False}},
+                        {'analysis': None},
+                        {'analysis.sections': {'$exists': False}},
+                        {'analysis.sections': None},
+                        {
+                            '$expr': {
+                                '$lt': [
+                                    {
+                                        '$size': {
+                                            '$objectToArray': {
+                                                '$ifNull': ['$analysis.sections', {}]
+                                            }
+                                        }
+                                    },
+                                    12
+                                ]
+                            }
+                        }
+                    ]
+                }
+            },
+            # Sort by EDHREC rank (best first), then by release date (oldest first)
+            {'$sort': {'edhrec_rank': 1, 'released_at': 1}},
+            # Group by card name and pick the best printing (first one due to sort)
+            {
+                '$group': {
+                    '_id': '$name',
+                    'best_printing': {'$first': '$$ROOT'}
+                }
+            },
+            # Limit the number of unique cards
+            {'$limit': limit},
+            # Extract the best printing document
+            {'$replaceRoot': {'newRoot': '$best_printing'}}
+        ]
+        
+        cards_needing_work = list(cards.aggregate(pipeline))
+        
+        # Add cards to priority queue (checking for existing queue entries by name, not UUID)
+        added_count = 0
+        skipped_count = 0
+        
+        for card in cards_needing_work:
+            # Check if this card name is already in queue (any printing)
+            existing = priority_regen_queue.find_one({'name': card['name'], 'processed': False})
+            if not existing:
+                if add_to_priority_queue(card['uuid'], reason='edhrec_refresh'):
+                    added_count += 1
+            else:
+                skipped_count += 1
+        
+        logger.info(f"🔄 Queue refresh: added {added_count} unique cards, skipped {skipped_count} already queued | total queue size: {priority_regen_queue.count_documents({'processed': False})}")
+        return added_count
+    except Exception as e:
+        logger.error(f"❌ Error refreshing priority queue: {e}")
+        return 0
+
+
+# --- REMOVE DUPLICATE PRINTINGS FROM CARDS AND PRIORITY QUEUE ON STARTUP ---
+def delete_duplicate_cards_and_queue():
+    """Remove all but the oldest printing of each card name from the main cards collection and the priority queue."""
+
+    # Remove duplicate printings from cards collection (group by name, order by released_at, keep oldest)
+    pipeline = [
+        {"$sort": {"name": 1, "released_at": 1}},
+        {"$group": {
+            "_id": "$name",
+            "all": {"$push": {"uuid": "$uuid", "_id": "$_id", "released_at": "$released_at"}},
+            "count": {"$sum": 1}
+        }}
+    ]
+    duplicates = list(cards.aggregate(pipeline))
+    removed = 0
+    for group in duplicates:
+        if group["count"] > 1:
+            # Keep the first (oldest by released_at), remove the rest
+            to_remove = [doc["uuid"] for doc in group["all"][1:]]
+            result = cards.delete_many({"uuid": {"$in": to_remove}})
+            removed += result.deleted_count
+    if removed:
+        logger.info(f"🗑️ Removed {removed} duplicate printings from cards collection")
+
+    # Remove duplicate printings from priority queue (group by name, order by submitted_at or priority_order, keep oldest)
+    priority_collection = db.priority_cards
+    pipeline = [
+        {"$sort": {"name": 1, "submitted_at": 1, "priority_order": 1}},
+        {"$group": {
+            "_id": "$name",
+            "all": {"$push": {"_id": "$_id", "submitted_at": "$submitted_at", "priority_order": "$priority_order"}},
+            "count": {"$sum": 1}
+        }},
+        {"$match": {"count": {"$gt": 1}}}
+    ]
+    dupes = list(priority_collection.aggregate(pipeline))
+    removed_queue = 0
+    for group in dupes:
+        # Keep the first (oldest by submitted_at or priority_order), remove the rest
+        to_remove = [doc["_id"] for doc in group["all"][1:]]
+        if to_remove:
+            result = priority_collection.delete_many({"_id": {"$in": to_remove}})
+            removed_queue += result.deleted_count
+    if removed_queue:
+        logger.info(f"🗑️ Removed {removed_queue} duplicate printings from priority queue")
+
+delete_duplicate_cards_and_queue()
+
+# Log startup information
+total_cards = cards.count_documents({})
+cards_with_analysis = cards.count_documents({'analysis': {'$exists': True}})
+logger.info(f"🚀 MTGAbyss backend starting | {total_cards:,} total cards | {cards_with_analysis:,} with analysis")
+
+
+# --- Initialize priority queue on startup with 100 most popular EDHREC cards ---
+def initialize_priority_queue_with_top_edhrec():
+    """Populate the priority queue with the 100 most popular unique cards by EDHREC rank."""
+    priority_collection = db.priority_cards
+    to_regen_collection = db.to_regenerate
+    # Clear any existing priority queue and to_regenerate collection
+    priority_collection.delete_many({})
+    to_regen_collection.delete_many({})
+    # Find top 100 unique cards by EDHREC rank (deduped by name, oldest printing)
+    pipeline = [
+        {"$match": {"edhrec_rank": {"$exists": True, "$ne": None}, "lang": "en"}},
+        {"$sort": {"edhrec_rank": 1, "released_at": 1}},
+        {"$group": {"_id": "$name", "card": {"$first": "$$ROOT"}}},
+        {"$sort": {"card.edhrec_rank": 1}},
+        {"$limit": 100}
+    ]
+    top_cards = list(cards.aggregate(pipeline))
+    priority_docs = []
+    regen_docs = []
+    now = datetime.now(UTC)
+    for i, group in enumerate(top_cards):
+        card = group["card"]
+        # Insert into priority queue
+        priority_docs.append({
+            "uuid": card["uuid"],
+            "name": card["name"],
+            "priority_order": i + 1,
+            "has_analysis": card.get("has_full_content", False),
+            "submitted_at": now,
+            "processed": False
+        })
+        # Insert into to_regenerate collection (brief info)
+        regen_docs.append({
+            "uuid": card["uuid"],
+            "name": card["name"],
+            "edhrec_rank": card.get("edhrec_rank"),
+            "set": card.get("set"),
+            "submitted_at": now,
+            "reason": "top_edhrec_init"
+        })
+    if priority_docs:
+        priority_collection.insert_many(priority_docs)
+        logger.info(f"📋 Priority queue initialized with top {len(priority_docs)} EDHREC cards")
+        try:
+            priority_collection.create_index('uuid', unique=True)
+            priority_collection.create_index('priority_order')
+            priority_collection.create_index('processed')
+        except Exception:
+            pass
+    if regen_docs:
+        to_regen_collection.insert_many(regen_docs)
+        logger.info(f"📝 to_regenerate collection initialized with top {len(regen_docs)} EDHREC cards")
+
+initialize_priority_queue_with_top_edhrec()
 
 # Create Markdown instance with desired extensions
 md = markdown.Markdown(extensions=['extra', 'codehilite', 'tables'])
@@ -307,6 +630,41 @@ def random_card_redirect():
         return "No cards with full content found", 404
     return redirect(f"/card/{card['uuid']}")
 
+# --- ARTIST ROUTES ---
+@app.route('/artist/<slug>')
+def artist_detail(slug):
+    # Find all cards by this artist
+    artist_cards = list(cards.find({'artist': {'$exists': True, '$ne': ''}}))
+    artist_cards = [card for card in artist_cards if slugify(card.get('artist', '')) == slug]
+    if not artist_cards:
+        abort(404)
+    artist_name = artist_cards[0].get('artist', slug)
+    # Cards with guides (has at least one guide section)
+    cards_with_guides = [card for card in artist_cards if card.get('analysis') and (card['analysis'].get('sections') or card['analysis'].get('content'))]
+    return render_template(
+        'artist.html',
+        artist_name=artist_name,
+        artist_slug=slug,
+        cards_with_guides=cards_with_guides,
+        all_cards=artist_cards
+    )
+
+@app.route('/artists')
+def artist_index():
+    # Get all unique artists
+    artist_cursor = cards.find({'artist': {'$exists': True, '$ne': ''}}, {'artist': 1})
+    artist_set = set()
+    for doc in artist_cursor:
+        artist = doc.get('artist')
+        if artist:
+            artist_set.add(artist)
+    # Build list of (name, slug, count)
+    artist_list = []
+    for artist in sorted(artist_set):
+        slug = slugify(artist)
+        count = cards.count_documents({'artist': artist})
+        artist_list.append({'name': artist, 'slug': slug, 'count': count})
+    return render_template('artist_index.html', artists=artist_list)
 
 # Worker API endpoints
 @app.route('/api/stats', methods=['GET'])
@@ -333,7 +691,7 @@ def api_stats():
         })
         
     except Exception as e:
-        logger.error(f"Error fetching stats: {str(e)}")
+        log_api_stats("stats", "error", str(e))
         return jsonify({
             'status': 'error', 
             'message': str(e)
@@ -342,153 +700,111 @@ def api_stats():
 
 @app.route('/api/get_random_unreviewed', methods=['GET'])
 def get_random_unreviewed():
-    """Get cards for worker processing - prioritize by mentions, fallback to random"""
+    """Get cards for worker processing from the unified priority queue"""
     try:
         # Optional query parameters
         limit = int(request.args.get('limit', 1))  # How many cards to return
+        mode = request.args.get('mode', 'full-guide')  # 'half-guide' or 'full-guide'
         
-        # First, try to get highest mentioned cards that need work
-        most_mentioned = list(mentions_histogram.find(
-            {},  # Any mentioned card
-            sort=[('mention_count', -1), ('last_mentioned', -1)],
-            limit=limit * 3  # Get extra to filter for cards that need work
-        ))
+        # Auto-refresh queue if it's getting low
+        queue_size = priority_regen_queue.count_documents({'processed': False})
+        if queue_size < 20:
+            logger.info(f"🔄 Queue low ({queue_size} cards), refreshing...")
+            refresh_priority_queue(100)
         
+        # Shuffle the queue before serving work, and deduplicate by card name
+        import random
+        queue_entries = list(priority_regen_queue.find({'processed': False}))
+        random.shuffle(queue_entries)
+        seen_names = set()
+        deduped_queue = []
+        for entry in queue_entries:
+            if entry['name'] not in seen_names:
+                deduped_queue.append(entry)
+                seen_names.add(entry['name'])
+            else:
+                # Remove duplicate from the queue
+                priority_regen_queue.delete_many({'_id': entry['_id']})
+
+        # Start full-guide at position 1, half-guide at position 2 (1-based, so index 0 and 1)
+        if mode == 'half-guide':
+            skip_amount = 1
+            queue_cards = deduped_queue[skip_amount:skip_amount+limit]
+            explanation = f"half-guide: positions {skip_amount+1}-{skip_amount+limit} (shuffled, deduped)"
+        else:
+            skip_amount = 0
+            queue_cards = deduped_queue[skip_amount:skip_amount+limit]
+            explanation = f"full-guide: positions {skip_amount+1}-{skip_amount+limit} (shuffled, deduped)"
+        
+        if not queue_cards:
+            return jsonify({
+                'status': 'no_cards',
+                'message': 'No unprocessed cards in priority queue',
+                'queue_info': {'mode': mode, 'explanation': explanation}
+            }), 404
+        
+        # Get full card data for each queue entry
         result_cards = []
-        
-        # Check mentioned cards to see if they need work
-        for mention_doc in most_mentioned:
-            if len(result_cards) >= limit:
-                break
+        for queue_entry in queue_cards:
+            card = cards.find_one({'uuid': queue_entry['uuid']})
+            if not card:
+                # Mark as processed if card doesn't exist
+                priority_regen_queue.update_one(
+                    {'uuid': queue_entry['uuid']},
+                    {'$set': {'processed': True, 'processed_at': datetime.now(UTC)}}
+                )
+                continue
                 
-            card = cards.find_one({
-                'uuid': mention_doc['uuid'],
-                '$or': [
-                    {'analysis': {'$exists': False}},
-                    {'analysis': None}
-                ]
-            })
-            if card:  # Card exists and needs analysis
-                card_data = {
-                    'uuid': card.get('uuid'),
-                    'scryfall_id': card.get('scryfall_id'),
-                    'name': card.get('name'),
-                    'mana_cost': card.get('mana_cost', ''),
-                    'type_line': card.get('type_line', ''),
-                    'oracle_text': card.get('oracle_text', ''),
-                    'power': card.get('power'),
-                    'toughness': card.get('toughness'),
-                    'cmc': card.get('cmc', 0),
-                    'colors': card.get('colors', []),
-                    'rarity': card.get('rarity', ''),
-                    'set': card.get('set', ''),
-                    'image_uris': card.get('image_uris', {}),
-                    'prices': card.get('prices', {}),
-                    'mention_count': mention_doc.get('mention_count', 0),
-                    'priority_source': 'mentions'
-                }
-                # Remove None values
-                card_data = {k: v for k, v in card_data.items() if v is not None}
-                result_cards.append(card_data)
-        
-        # If we don't have enough cards from mentions, fill with random cards
-        if len(result_cards) < limit:
-            remaining_needed = limit - len(result_cards)
-            existing_uuids = [card['uuid'] for card in result_cards]
-            
-            # Get random cards not already in results and without analysis
-            query = {
-                'uuid': {'$nin': existing_uuids},
-                '$or': [
-                    {'analysis': {'$exists': False}},
-                    {'analysis': None}
-                ]
-            } if existing_uuids else {
-                '$or': [
-                    {'analysis': {'$exists': False}},
-                    {'analysis': None}
-                ]
+            card_data = {
+                'uuid': card.get('uuid'),
+                'scryfall_id': card.get('scryfall_id'),
+                'name': card.get('name'),
+                'mana_cost': card.get('mana_cost', ''),
+                'type_line': card.get('type_line', ''),
+                'oracle_text': card.get('oracle_text', ''),
+                'power': card.get('power'),
+                'toughness': card.get('toughness'),
+                'cmc': card.get('cmc', 0),
+                'colors': card.get('colors', []),
+                'rarity': card.get('rarity', ''),
+                'set': card.get('set', ''),
+                'image_uris': card.get('image_uris', {}),
+                'prices': card.get('prices', {}),
+                'edhrec_rank': card.get('edhrec_rank'),
+                'priority_source': 'unified_queue',
+                'queue_reason': queue_entry.get('reason', 'unknown')
             }
-            random_pipeline = [
-                {'$match': query},
-                {'$sample': {'size': remaining_needed * 2}}  # Get extra in case some are filtered
-            ]
-            
-            random_cards = list(cards.aggregate(random_pipeline))
-            
-            for card in random_cards:
-                if len(result_cards) >= limit:
-                    break
-                    
-                card_data = {
-                    'uuid': card.get('uuid'),
-                    'scryfall_id': card.get('scryfall_id'),
-                    'name': card.get('name'),
-                    'mana_cost': card.get('mana_cost', ''),
-                    'type_line': card.get('type_line', ''),
-                    'oracle_text': card.get('oracle_text', ''),
-                    'power': card.get('power'),
-                    'toughness': card.get('toughness'),
-                    'cmc': card.get('cmc', 0),
-                    'colors': card.get('colors', []),
-                    'rarity': card.get('rarity', ''),
-                    'set': card.get('set', ''),
-                    'image_uris': card.get('image_uris', {}),
-                    'prices': card.get('prices', {}),
-                    'mention_count': 0,
-                    'priority_source': 'random'
-                }
-                # Remove None values
-                card_data = {k: v for k, v in card_data.items() if v is not None}
-                result_cards.append(card_data)
+            # Remove None values
+            card_data = {k: v for k, v in card_data.items() if v is not None}
+            result_cards.append(card_data)
         
         if not result_cards:
             return jsonify({
                 'status': 'no_cards',
-                'message': 'No cards found in database',
-                'total_cards': cards.count_documents({})
+                'message': 'No valid cards found in queue entries',
+                'queue_info': {'mode': mode, 'explanation': explanation}
             }), 404
         
-        # Get stats for response
-        total_cards = cards.count_documents({})
-        total_mentions = mentions_histogram.count_documents({})
-        
-        # Determine primary selection type for worker logging
-        from_mentions = len([c for c in result_cards if c.get('priority_source') == 'mentions'])
-        from_random = len([c for c in result_cards if c.get('priority_source') == 'random'])
-
-        if from_mentions > 0:
-            selection_type = 'mentions'
-        elif from_random > 0:
-            selection_type = 'random'
-        else:
-            selection_type = 'unknown'
-
-        # Log if any card came from recommended (mentions) and how many
-        if from_mentions > 0:
-            logger.info(f"Selected {from_mentions} recommended card(s) from mentions for work assignment.")
-        if from_random > 0:
-            logger.info(f"Selected {from_random} card(s) from random fallback for work assignment.")
+        # Log selection info
+        card_names = [c['name'] for c in result_cards[:3]]
+        if len(result_cards) > 3:
+            card_names.append("...")
+        log_worker_action(mode, f"Queue selection", f"{', '.join(card_names)} | {explanation}")
 
         return jsonify({
             'status': 'success',
             'cards': result_cards,
             'returned_count': len(result_cards),
-            'total_cards': total_cards,
             'selection_info': {
-                'type': selection_type,
-                'from_mentions': from_mentions,
-                'from_random': from_random
-            },
-            'priority_stats': {
-                'from_mentions': from_mentions,
-                'from_random': from_random,
-                'total_mentioned_cards': total_mentions
+                'type': 'unified_priority_queue',
+                'mode': mode,
+                'explanation': explanation,
+                'queue_size': queue_size
             }
         })
         
     except Exception as e:
-        logger.error(f"Error fetching random card: {str(e)}")
+        log_api_stats("get_random_unreviewed", "error", str(e))
         return jsonify({
             'status': 'error', 
             'message': str(e)
@@ -552,12 +868,13 @@ def submit_priority_list():
                 'name': card_info['name'],
                 'priority_order': i + 1,
                 'has_analysis': card_info['has_analysis'],
-                'submitted_at': datetime.utcnow(),
+                'submitted_at': datetime.now(UTC),
                 'processed': False
             })
         
         if priority_docs:
             priority_collection.insert_many(priority_docs)
+            logger.info(f"📋 Priority queue updated: {len(priority_docs)} cards queued | {len([c for c in valid_uuids if c['has_analysis']])} with analysis, {len([c for c in valid_uuids if not c['has_analysis']])} need analysis")
             # Create index for fast queries
             try:
                 priority_collection.create_index('uuid', unique=True)
@@ -576,7 +893,7 @@ def submit_priority_list():
         })
         
     except Exception as e:
-        logger.error(f"Error submitting priority list: {str(e)}")
+        log_api_stats("submit_priority_list", "error", str(e))
         return jsonify({
             'status': 'error',
             'message': str(e)
@@ -607,7 +924,7 @@ def get_priority_work():
             # Mark as processed if card doesn't exist
             priority_collection.update_one(
                 {'uuid': priority_card['uuid']},
-                {'$set': {'processed': True, 'processed_at': datetime.utcnow()}}
+                {'$set': {'processed': True, 'processed_at': datetime.now(UTC)}}
             )
             return jsonify({
                 'status': 'error',
@@ -744,7 +1061,7 @@ def submit_work():
             update_fields['has_full_content'] = True
         # Set analyzed_at inside the analysis object, not overwriting it
         if 'analysis' in update_fields and isinstance(update_fields['analysis'], dict):
-            update_fields['analysis']['analyzed_at'] = datetime.utcnow().isoformat()
+            update_fields['analysis']['analyzed_at'] = datetime.now(UTC).isoformat()
         try:
             # Always set status to 'public' on new/updated guides
             update_fields['status'] = 'public'
@@ -753,7 +1070,7 @@ def submit_work():
                 {'$set': update_fields},
                 upsert=True
             )
-            logger.info(f"Saved analysis for card {entry['uuid']}")
+            log_card_action("Analysis saved", card_name, entry['uuid'], f"sections: {len(entry.get('analysis', {}).get('sections', {}))}")
             
             # Extract mentions and update mention counts for new analyses
             try:
@@ -776,30 +1093,37 @@ def submit_work():
                     
                     mentioned_cards = extract_card_mentions_simple(all_text)
                     if mentioned_cards:
-                        logger.info(f"Found {len(mentioned_cards)} card mentions in {card_name}: {mentioned_cards}")
+                        logger.info(f"🔗 Found {len(mentioned_cards)} card mentions in '{card_name}': {', '.join(mentioned_cards[:3])}{'...' if len(mentioned_cards) > 3 else ''}")
                         update_mentions_histogram_simple(mentioned_cards, card_name)
                     else:
-                        logger.debug(f"No card mentions found in {card_name}")
+                        logger.debug(f"📝 No card mentions found in '{card_name}'")
             except Exception as mention_error:
-                logger.error(f"Error processing mentions for {entry['uuid']}: {mention_error}")
+                logger.error(f"🔗 Error tracking mentions for '{card_name}': {mention_error}")
                 # Don't fail the whole operation if mention tracking fails
             
-            # Mark priority card as processed if it exists in priority queue
+            # Mark priority card as processed if it exists in priority queue, and shuffle queue after submission
             try:
                 priority_collection = db.priority_cards
-                priority_result = priority_collection.update_one(
-                    {'uuid': entry['uuid']},
-                    {'$set': {'processed': True, 'processed_at': datetime.utcnow()}}
-                )
-                if priority_result.matched_count > 0:
-                    logger.info(f"Marked priority card {entry['uuid']} as processed")
+                # Delete all queue entries for this card name
+                if card_name:
+                    delete_result = priority_collection.delete_many({'name': card_name})
+                    logger.info(f"🗑️ All queue entries for '{card_name}' deleted from priority queue (deleted: {delete_result.deleted_count})")
+                else:
+                    delete_result = priority_collection.delete_one({'uuid': entry['uuid']})
+                    logger.info(f"🗑️ Queue entry for uuid {entry['uuid']} deleted from priority queue (deleted: {delete_result.deleted_count})")
+                # Shuffle the remaining queue after submission
+                remaining = list(priority_collection.find({'processed': False}))
+                import random
+                random.shuffle(remaining)
+                for i, doc in enumerate(remaining):
+                    priority_collection.update_one({'_id': doc['_id']}, {'$set': {'priority_order': i+1}})
             except Exception as priority_error:
-                logger.error(f"Error updating priority status for {entry['uuid']}: {priority_error}")
+                logger.error(f"📋 Error updating priority status for '{card_name}': {priority_error}")
                 # Don't fail the whole operation if priority update fails
             
             results.append({'uuid': entry['uuid'], 'status': 'ok'})
         except Exception as e:
-            logger.error(f"Error saving analysis for {entry['uuid']}: {str(e)}")
+            log_card_action("Save failed", entry.get('card_data', {}).get('name', 'Unknown'), entry['uuid'], str(e))
             results.append({'uuid': entry['uuid'], 'status': 'error', 'message': str(e)})
     return jsonify({'status': 'ok', 'results': results})
 
@@ -845,7 +1169,8 @@ def fetch_guide_component():
         
         # Find the first missing section from our guide structure
         missing_section = None
-        for section_key in GUIDE_SECTIONS.keys():
+        # Iterate over present sections in order (no fixed GUIDE_SECTIONS)
+        for section_key in card_needing_work.get('analysis', {}).get('sections', {}).keys():
             if section_key not in existing_sections:
                 missing_section = section_key
                 break
@@ -888,14 +1213,14 @@ def fetch_guide_component():
             # Context chaining: gather all previous section outputs in guide order
             chained_sections = []
             if card_needing_work.get('analysis', {}).get('sections'):
-                for section_key in GUIDE_SECTIONS.keys():
+                for section_key in card_needing_work.get('analysis', {}).get('sections', {}).keys():
                     if section_key == missing_section:
                         break
                     section_data = card_needing_work['analysis']['sections'].get(section_key)
                     if section_data and section_data.get('content'):
                         chained_sections.append({
                             'section': section_key,
-                            'title': section_data.get('title', GUIDE_SECTIONS[section_key]['title']),
+                            'title': section_data.get('title', section_key.replace('_', ' ').title()),
                             'content': section_data['content']
                         })
 
@@ -912,7 +1237,7 @@ def fetch_guide_component():
                     'rarity': card_needing_work.get('rarity', '')
                 },
                 'existing_sections': list(existing_sections),
-                'total_sections_needed': len(GUIDE_SECTIONS),
+                'total_sections_needed': len(card_needing_work.get('analysis', {}).get('sections', {})),
                 'chained_sections': chained_sections
             }
             if can_use_full_card(model):
@@ -931,19 +1256,19 @@ def fetch_guide_component():
             },
             'component': {
                 'type': missing_section,
-                'title': GUIDE_SECTIONS.get(missing_section, {}).get('title', missing_section),
-                'prompt_template': GUIDE_SECTIONS.get(missing_section, {}).get('prompt', ''),
+                'title': missing_section.replace('_', ' ').title(),
+                'prompt_template': '',
                 'language': 'en',
                 'models': models_to_use
             },
             'contexts': model_contexts if len(model_contexts) > 1 else model_contexts[0]
         }
 
-        logger.info(f"Provided component work: {missing_section} for card {card_needing_work['name']} (models: {models_to_use})")
+        logger.info(f"🎯 Provided component work: '{missing_section}' for '{card_needing_work['name']}' | models: {', '.join(models_to_use)}")
         return jsonify(component_spec)
         
     except Exception as e:
-        logger.error(f"Error in fetch_destination_component: {str(e)}")
+        log_api_stats("fetch_guide_component", "error", str(e))
         return jsonify({
             'status': 'error',
             'message': f'Server error: {str(e)}'
@@ -960,18 +1285,14 @@ def api_getwork():
     # Use the correct collection and section keys
     card = None
 
-    # Get required section keys from GUIDE_SECTIONS
-    required_sections = list(GUIDE_SECTIONS.keys())
-
     # 1. Try to find a card with no analysis at all
     card = cards.find_one({"analysis": {"$exists": False}})
     if not card:
-        # 2. Try to find a card with incomplete analysis (missing required sections)
+        # 2. Try to find a card with incomplete analysis (missing sections)
         card = cards.find_one({
             "$or": [
                 {"analysis": {"$exists": False}},
-                {"analysis.sections": {"$exists": False}},
-                {"analysis.sections": {"$not": {"$all": required_sections}}}
+                {"analysis.sections": {"$exists": False}}
             ]
         })
     if not card:
@@ -994,11 +1315,11 @@ def submit_guide_component():
         data = request.json
         # Debug: Log incoming payload and component_type
         import json
-        logger.info(f"/api/submit_guide_component received: component_type={data.get('component_type')} payload={json.dumps(data)[:500]}")
+        logger.info(f"🔧 Component submission: '{data.get('component_type')}' for card {data.get('uuid', 'unknown')[:8]}... | payload size: {len(str(data))} chars")
 
         # Safeguard: Prevent accidental overwrite with generic 'section' key
         if data.get('component_type') == 'section':
-            logger.warning(f"Rejected component_type='section' for card {data.get('uuid')}. Payload: {json.dumps(data)[:500]}")
+            logger.warning(f"⚠️  Rejected generic component_type='section' for card {data.get('uuid', 'unknown')[:8]}...")
             return jsonify({'status': 'error', 'message': 'Invalid component_type: section'}), 400
         if not data:
             return jsonify({'status': 'error', 'message': 'No data provided'}), 400
@@ -1029,7 +1350,7 @@ def submit_guide_component():
         if 'analysis' not in card:
             card['analysis'] = {
                 'sections': {},
-                'analyzed_at': datetime.utcnow().isoformat(),
+                'analyzed_at': datetime.now(UTC).isoformat(),
                 'model_used': data.get('model_used', 'Unknown'),
                 'guide_version': '2.1_gemini_componentized'
             }
@@ -1042,7 +1363,7 @@ def submit_guide_component():
             'title': component_title,
             'content': component_content,
             'language': data.get('language', 'en'),
-            'generated_at': datetime.utcnow().isoformat(),
+            'generated_at': datetime.now(UTC).isoformat(),
             'model_used': data.get('model_used', 'Unknown')
         }
         
@@ -1050,33 +1371,33 @@ def submit_guide_component():
         try:
             mentioned_cards = extract_card_mentions_simple(component_content)
             if mentioned_cards:
-                logger.info(f"Found {len(mentioned_cards)} mentions in {card['name']} component '{component_type}': {mentioned_cards}")
+                logger.info(f"🔗 Found {len(mentioned_cards)} mentions in '{card['name']}' component '{component_type}': {', '.join(mentioned_cards[:3])}{'...' if len(mentioned_cards) > 3 else ''}")
                 update_mentions_histogram_simple(mentioned_cards, card['name'])
             else:
-                logger.debug(f"No mentions found in {card['name']} component '{component_type}'")
+                logger.debug(f"📝 No mentions found in '{card['name']}' component '{component_type}'")
         except Exception as mention_error:
-            logger.error(f"Error tracking mentions in component {component_type} for {card['name']}: {mention_error}")
+            logger.error(f"🔗 Error tracking mentions in component '{component_type}' for '{card['name']}': {mention_error}")
             # Don't fail the component save if mention tracking fails
         
         # Update metadata
-        card['analysis']['last_updated'] = datetime.utcnow().isoformat()
+        card['analysis']['last_updated'] = datetime.now(UTC).isoformat()
         if data.get('model_used'):
             card['analysis']['model_used'] = data['model_used']
         
         # Check if we have all sections and can assemble complete content
         existing_sections = set(card['analysis']['sections'].keys())
-        all_sections = set(GUIDE_SECTIONS.keys())
+        all_sections = set(card['analysis']['sections'].keys())
         
-        if existing_sections >= all_sections:
+        if existing_sections == all_sections and len(all_sections) > 0:
             # Assemble complete formatted content
-            formatted_content = format_guide_for_display(card['analysis']['sections'])
+            formatted_content = assemble_guide_content_from_sections(card['analysis']['sections'])
             card['analysis']['content'] = formatted_content
             card['analysis']['status'] = 'complete'
-            logger.info(f"Complete analysis assembled for {card['name']} ({len(formatted_content)} chars)")
+            log_card_action("Complete analysis assembled", card['name'], uuid, f"{len(formatted_content):,} chars, {len(all_sections)} sections")
         else:
             missing_count = len(all_sections - existing_sections)
             card['analysis']['status'] = f'partial ({len(existing_sections)}/{len(all_sections)} sections)'
-            logger.info(f"Partial analysis updated for {card['name']} ({missing_count} sections remaining)")
+            log_card_action("Partial analysis updated", card['name'], uuid, f"{missing_count} sections remaining")
         
         # Save to database
         # Always set status to 'public' on new/updated guides
@@ -1086,7 +1407,7 @@ def submit_guide_component():
                 '$set': {
                     'analysis': card['analysis'],
                     'has_analysis': len(existing_sections) > 0,
-                    'last_updated': datetime.utcnow().isoformat(),
+                    'last_updated': datetime.now(UTC).isoformat(),
                     'status': 'public'
                 }
             }
@@ -1105,11 +1426,11 @@ def submit_guide_component():
         if card['analysis'].get('status') == 'complete':
             response_data['card_url'] = f"{MTGABYSS_PUBLIC_URL}/card/{uuid}"
         
-        logger.info(f"Component {component_type} submitted for {card['name']}")
+        log_card_action("Component submitted", card['name'], uuid, f"'{component_type}' → {card['analysis']['status']}")
         return jsonify(response_data)
         
     except Exception as e:
-        logger.error(f"Error in submit_destination_component: {str(e)}")
+        log_api_stats("submit_guide_component", "error", str(e))
         return jsonify({
             'status': 'error',
             'message': f'Server error: {str(e)}'
@@ -1131,7 +1452,7 @@ def guide_status(uuid):
         
         analysis = card.get('analysis', {})
         existing_sections = set(analysis.get('sections', {}).keys())
-        all_sections = set(GUIDE_SECTIONS.keys())
+        all_sections = set(analysis.get('sections', {}).keys())
         
         # Determine what's missing
         missing_sections = all_sections - existing_sections
@@ -1164,95 +1485,19 @@ def guide_status(uuid):
             'message': f'Server error: {str(e)}'
         }), 500
 
-
-# --- HELPER FUNCTIONS FOR COMPONENTIZED SYSTEM ---
-
-def format_guide_for_display(sections_dict):
+def assemble_guide_content_from_sections(sections):
     """
-    Format individual sections into a complete guide for display.
-    This is the server-side assembly of componentized content.
+    Assemble a full guide from a dict of sections, preserving order and using section titles if present.
     """
-    if not sections_dict:
-        return ""
-    
-    # Order sections according to our guide structure
-    ordered_content = []
-    for section_key in GUIDE_SECTIONS.keys():
-        if section_key in sections_dict:
-            section_data = sections_dict[section_key]
-            section_title = section_data.get('title', GUIDE_SECTIONS[section_key]['title'])
-            section_content = section_data.get('content', '')
-            
-            if section_content.strip():
-                # Format each section with markdown header
-                ordered_content.append(f"## {section_title}\n\n{section_content.strip()}\n")
-    
-    return "\n".join(ordered_content)
-
-
-# --- GUIDE SECTIONS DEFINITION ---
-# Moving this from worker to shared location for API use
-
-GUIDE_SECTIONS = {
-    "overview": {
-        "title": "Card Overview",
-        "prompt": "Write a comprehensive overview of [[{card_name}]] as a Magic: The Gathering card. Explain what makes this card unique and noteworthy in the game's ecosystem."
-    },
-    "mechanics_breakdown": {
-        "title": "Mechanics and Interactions", 
-        "prompt": "Provide a detailed breakdown of [[{card_name}]]'s mechanics, rules interactions, and technical aspects. Cover how the card works, edge cases, and timing considerations."
-    },
-    "strategic_applications": {
-        "title": "Strategic Applications",
-        "prompt": "Analyze the strategic uses of [[{card_name}]] in gameplay. Cover combos, synergies, and tactical applications across different scenarios."
-    },
-    "deckbuilding_guide": {
-        "title": "Deckbuilding and Archetypes",
-        "prompt": "Explain how to build around [[{card_name}]] and what archetypes it fits into. Cover deck construction considerations, support cards, and build-around strategies."
-    },
-    "format_analysis": {
-        "title": "Format Viability",
-        "prompt": "Assess [[{card_name}]]'s performance and viability across different Magic formats (Standard, Modern, Legacy, Commander, etc.). Include competitive context and meta positioning."
-    },
-    "gameplay_scenarios": {
-        "title": "Gameplay Scenarios",
-        "prompt": "Describe common gameplay scenarios involving [[{card_name}]]. Cover typical play patterns, decision points, and situational considerations."
-    },
-    "historical_context": {
-        "title": "Historical Impact",
-        "prompt": "Explore [[{card_name}]]'s place in Magic's history, its impact on the game, and how it has evolved in the meta over time."
-    },
-    "flavor_and_design": {
-        "title": "Flavor and Design Philosophy", 
-        "prompt": "Analyze the flavor, art, and design philosophy behind [[{card_name}]]. Cover lore connections, artistic elements, and design intent."
-    },
-    "budget_considerations": {
-        "title": "Budget and Accessibility",
-        "prompt": "Discuss the financial aspects of [[{card_name}]] including market price, budget alternatives, and accessibility for different player types."
-    },
-    "advanced_techniques": {
-        "title": "Advanced Play Techniques",
-        "prompt": (
-            "Synthesize all previous sections to deliver an advanced, expert-level analysis of [[{card_name}]]. "
-            "Draw on the card's overview, mechanics, strategic applications, deckbuilding, format analysis, gameplay scenarios, historical context, flavor, and budget considerations. "
-            "Provide pro tips, high-level play techniques, and optimization strategies that only experienced players would know. "
-            "Highlight subtle interactions, meta-relevant tricks, and nuanced insights that go beyond the basics. "
-            "Make this section stand out as the most in-depth and impressive part of the guide."
-        )
-    },
-    "common_mistakes": {
-        "title": "Common Mistakes and Pitfalls",
-        "prompt": "Identify common mistakes players make with [[{card_name}]] and how to avoid them. Cover misplays, misconceptions, and learning points."
-    },
-    "conclusion": {
-        "title": "Final Assessment",
-        "prompt": (
-            "Write a final assessment and summary of [[{card_name}]] as a Magic: The Gathering card. "
-            "Synthesize and reference the most important points from all previous sections, especially the advanced techniques. "
-            "Offer a clear, actionable recommendation for players considering this card, and reflect on its overall value and role in the game."
-        )
-    }
-}
+    if not sections or not isinstance(sections, dict):
+        return ''
+    parts = []
+    for key, section in sections.items():
+        title = section.get('title', key.replace('_', ' ').title())
+        content = section.get('content', '')
+        if content:
+            parts.append(f"## {title}\n\n{content.strip()}\n")
+    return '\n'.join(parts).strip()
 
 
 
@@ -1324,7 +1569,7 @@ def get_guide_content(analysis_data, language='en'):
         formatted_content = analysis_data.get(content_key) or analysis_data.get(old_content_key, '')
         # If content is missing but sections exist, assemble from sections
         if not formatted_content and sections:
-            formatted_content = format_guide_for_display(sections)
+            formatted_content = assemble_guide_content_from_sections(sections)
 
         guide_meta = {
             'type': 'sectioned',
@@ -1399,7 +1644,8 @@ def update_mentions_histogram_simple(mentioned_card_names, mentioning_card_name)
     if not mentioned_card_names:
         return
     
-    current_time = datetime.utcnow()
+    current_time = datetime.now(UTC)
+    updated_count = 0
     
     for card_name in mentioned_card_names:
         # Skip self-references
@@ -1414,41 +1660,26 @@ def update_mentions_histogram_simple(mentioned_card_names, mentioning_card_name)
             )
             
             if not card:
-                logger.debug(f"Card '{card_name}' not found for mention tracking")
-                continue
-            
-            # Check if card already has a review - skip if it does
-            existing_analysis = cards.find_one(
-                {'uuid': card['uuid'], 'analysis': {'$exists': True, '$ne': None}},
-                {'uuid': 1}
-            )
-            
-            if existing_analysis:
-                logger.debug(f"Skipping mention tracking for '{card['name']}' - already has analysis")
+                logger.debug(f"🔍 Card '{card_name}' not found for mention tracking")
                 continue
                 
-            # Increment mention count for this UUID
+            # Update mentions histogram
             mentions_histogram.update_one(
                 {'uuid': card['uuid']},
                 {
                     '$inc': {'mention_count': 1},
-                    '$set': {
-                        'last_mentioned': current_time,
-                        'last_mentioned_in': mentioning_card_name,
-                        'card_name': card['name']
-                    },
-                    '$setOnInsert': {
-                        'first_mentioned': current_time,
-                        'created_at': current_time
-                    }
+                    '$set': {'last_mentioned': current_time},
+                    '$setOnInsert': {'card_name': card['name']}
                 },
                 upsert=True
             )
-            
-            logger.info(f"Incremented mentions for '{card['name']}' (mentioned in {mentioning_card_name})")
+            updated_count += 1
                 
         except Exception as e:
-            logger.error(f"Error updating mentions for '{card_name}': {e}")
+            logger.error(f"🔗 Error tracking mention of '{card_name}': {e}")
+    
+    if updated_count > 0:
+        logger.debug(f"🔗 Updated mentions histogram for {updated_count} cards")
 
 def extract_mentions_from_guide(analysis_data, language='en'):
     """Extract card mentions from either format of guide"""
@@ -1462,12 +1693,12 @@ def extract_mentions_from_guide(analysis_data, language='en'):
             return []
         names = set()
         # [[Card Name]] - double brackets (priority)
-        for m in re.findall(r'\[\[(.+?)\]\]', text):
+        for m in re.findall(r'\[\[([^\]]+)\]\]', text):
             names.add(m.strip())
         # [Card Name] but not [B] or [/B] and not part of [[ ]]
         # Remove any [[ ]] patterns first to avoid conflicts
         text_without_double_brackets = re.sub(r'\[\[.+?\]\]', '', text)
-        for m in re.findall(r'\[(?!/?B\])(.*?)\]', text_without_double_brackets):
+        for m in re.findall(r'\[([^\]]+)\]', text_without_double_brackets):
             names.add(m.strip())
         return list(names)
     
@@ -1576,7 +1807,7 @@ def add_mentioned_cards_to_priority_queue(mentioned_card_names: list):
     
     try:
         priority_collection = db.priority_cards
-        current_time = datetime.utcnow()
+        current_time = datetime.now(UTC)
         
         # Compact priority queue: remove duplicates and renumber
         compact_priority_queue()
@@ -1721,3 +1952,38 @@ def get_card_image_filter(card, image_type='normal'):
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+def delete_duplicate_cards():
+    """Delete duplicate cards, keeping only the oldest printing of each card."""
+    try:
+        # Group by card name and find the oldest printing
+        pipeline = [
+            {
+                '$group': {
+                    '_id': '$name',
+                    'oldest_card': {'$first': '$$ROOT'},
+                    'all_ids': {'$push': '$_id'}
+                }
+            }
+        ]
+
+        grouped_cards = list(cards.aggregate(pipeline))
+
+        # Delete all cards except the oldest printing for each name
+        for card_group in grouped_cards:
+            oldest_id = card_group['oldest_card']['_id']
+            all_ids = card_group['all_ids']
+
+            # Remove the oldest ID from the list of IDs to delete
+            all_ids.remove(oldest_id)
+
+            # Delete all other printings
+            if all_ids:
+                cards.delete_many({'_id': {'$in': all_ids}})
+
+        logger.info("✅ Duplicate cards removed, keeping only the oldest printing for each name.")
+    except Exception as e:
+        logger.error(f"❌ Error deleting duplicate cards: {e}")
+
+# Call the function to clean the database
+delete_duplicate_cards()

@@ -22,9 +22,10 @@ import requests
 import json
 import os
 import logging
+import sys
+import re
 from datetime import datetime, UTC
 from typing import List, Dict, Optional, Any
-import sys
 
 # Try to import Gemini
 try:
@@ -47,149 +48,207 @@ MTGABYSS_BASE_URL = os.getenv('MTGABYSS_BASE_URL', 'https://mtgabyss.com')
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
+# Configure beautiful logging with elapsed time tracking
+import time as time_module
+_start_time = time_module.time()
+
+def elapsed_time():
+    """Get elapsed time since worker startup in a readable format"""
+    elapsed = time_module.time() - _start_time
+    if elapsed < 60:
+        return f"+{elapsed:.1f}s"
+    elif elapsed < 3600:
+        return f"+{elapsed/60:.1f}m"
+    else:
+        return f"+{elapsed/3600:.1f}h"
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format='%(levelname)-8s | %(name)-15s | %(message)s'
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('MTGWorker')
+
+# Set up colored logging for console (if available)
+try:
+    import colorlog
+    console_handler = colorlog.StreamHandler()
+    console_handler.setFormatter(colorlog.ColoredFormatter(
+        '%(log_color)s%(levelname)-8s | %(name)-15s | %(message)s',
+        log_colors={
+            'DEBUG': 'cyan',
+            'INFO': 'green',
+            'WARNING': 'yellow',
+            'ERROR': 'red',
+            'CRITICAL': 'bold_red',
+        }
+    ))
+    logger.handlers.clear()
+    logger.addHandler(console_handler)
+    logger.info("🎨 Worker colored logging enabled")
+except ImportError:
+    logger.info("📝 Worker standard logging active (install colorlog for colors)")
+
+def log_card_work(action, card_name, uuid="", extra_info=""):
+    """Helper for consistent card work logging"""
+    card_display = f"'{card_name}' ({uuid[:8]}...)" if uuid else f"'{card_name}'"
+    if extra_info:
+        logger.info(f"🃏 {action}: {card_display} | {extra_info} | {elapsed_time()}")
+    else:
+        logger.info(f"🃏 {action}: {card_display} | {elapsed_time()}")
+
+def log_model_work(model_name, action, details=""):
+    """Helper for model-related logging"""
+    if details:
+        logger.info(f"🤖 [{model_name.upper()}] {action} | {details} | {elapsed_time()}")
+    else:
+        logger.info(f"🤖 [{model_name.upper()}] {action} | {elapsed_time()}")
+
+def log_api_call(endpoint, status, details=""):
+    """Helper for API call logging"""
+    status_emoji = "✅" if status == "success" else "❌" if status == "error" else "⚠️"
+    if details:
+        logger.info(f"{status_emoji} API {endpoint} → {status.upper()} | {details} | {elapsed_time()}")
+    else:
+        logger.info(f"{status_emoji} API {endpoint} → {status.upper()} | {elapsed_time()}")
+
+def log_worker_stats(operation, count, details=""):
+    """Helper for worker statistics logging"""
+    if details:
+        logger.info(f"📊 {operation}: {count} | {details} | {elapsed_time()}")
+    else:
+        logger.info(f"📊 {operation}: {count} | {elapsed_time()}")
 
 def simple_log(message: str):
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{timestamp}] {message}")
+    """Legacy simple logging function - now uses beautiful logging"""
+    logger.info(f"📝 {message}")
 
-HALFGUIDE_SECTIONS = [
-    "tldr", "mechanics", "strategic", "advanced", "mistakes", "conclusion"
-]
-HALFGUIDE_DISPLAY_MAP = {
-    "tldr": "TL;DR Summary",
-    "mechanics": "Card Mechanics & Interactions",
-    "strategic": "Strategic Applications",
-    "advanced": "Advanced Techniques",
-    "mistakes": "Common Mistakes",
-    "conclusion": "Conclusion"
-}
 
-FULLGUIDE_SECTIONS = [
-    "tldr", "mechanics", "strategic", "advanced", "mistakes", "deckbuilding", "format", "scenarios", "history", "flavor", "budget", "conclusion"
-]
-FULLGUIDE_DISPLAY_MAP = {
-    "tldr": "TL;DR Summary",
-    "mechanics": "Card Mechanics & Interactions",
-    "strategic": "Strategic Applications",
-    "advanced": "Advanced Techniques",
-    "mistakes": "Common Mistakes",
-    "deckbuilding": "Deckbuilding & Synergies",
-    "format": "Format & Archetype Roles",
-    "scenarios": "Key Scenarios & Matchups",
-    "history": "History & Notable Appearances",
-    "flavor": "Flavor & Lore",
-    "budget": "Budget & Accessibility",
-    "conclusion": "Conclusion"
-}
-
-def get_halfguide_section_definitions():
-    return {
-        "tldr": {
-            "title": "TL;DR Summary",
-            # Prompt is direct, does not instruct the model to preface with a heading or restate the prompt
-            "prompt": "Summarize the card's main strengths, weaknesses, and archetypes in 3-5 concise sentences. Do not preface with a heading or restate this prompt.",
-            "model": "llama3.1:latest"
-        },
-        "mechanics": {
-            "title": "Card Mechanics & Interactions",
-            "prompt": "Explain the card's rules, mechanics, and any unique interactions. Include edge cases and rules notes.",
-            "model": "llama3.1:latest"
-        },
-        "strategic": {
-            "title": "Strategic Applications",
-            "prompt": "Describe how this card is used strategically. What decks/archetypes want it? What roles does it fill?",
-            "model": "qwen2.5:7b"
-        },
-        "advanced": {
-            "title": "Advanced Techniques",
-            "prompt": "Describe advanced or less obvious uses, tricks, or interactions.",
-            "model": "qwen2.5:7b"
-        },
-        "mistakes": {
-            "title": "Common Mistakes",
-            "prompt": "List common mistakes or misplays involving this card.",
-            "model": "mistral:7b-instruct"
-        },
-        "conclusion": {
-            "title": "Conclusion",
-            "prompt": "Summarize the card's overall value and when to play it.",
-            "model": "llama3.1:latest"
+# Flexible, key-agnostic section definitions
+def get_guide_section_definitions(mode: str):
+    """
+    Return a flexible, key-agnostic section definitions dict for the guide system.
+    In a real system, this could load from a config file, database, or API.
+    """
+    if mode == 'half':
+        # Half-guide: streamlined 6-section format
+        return {
+            "tldr": {
+                "title": "TL;DR Summary",
+                "prompt": "Provide a clear and concise summary of this card's main strengths, typical uses, and impact in Commander decks. Mention other relevant formats only if it enhances understanding.",
+                "model": "llama3.1:latest"
+            },
+            "mechanics": {
+                "title": "Card Mechanics & Interactions",
+                "prompt": "Explain the card's rules and abilities in detail, including any notable edge cases or unique interactions especially relevant in Commander games. Use examples to clarify complex points.",
+                "model": "llama3.1:latest"
+            },
+            "strategic": {
+                "title": "Strategic Applications",
+                "prompt": "Discuss how this card is used strategically within Commander. Cover common archetypes it fits into, its role on the battlefield, and what kind of decks or strategies benefit most.",
+                "model": "llama3.1:latest"
+            },
+            "advanced": {
+                "title": "Advanced Techniques",
+                "prompt": "Detail any advanced, creative, or less-obvious uses for this card. Cover synergies, rules tricks, or interactions that strong Commander players would appreciate.",
+                "model": "llama3.1:latest"
+            },
+            "mistakes": {
+                "title": "Common Mistakes",
+                "prompt": "List common mistakes or misplays players make with this card—especially in Commander. Cover timing issues, misunderstood rules, or poor synergies.",
+                "model": "llama3.1:latest"
+            },
+            "conclusion": {
+                "title": "Conclusion",
+                "prompt": "Offer a final evaluation of this card's overall value in Commander decks, including when and why players should consider including it.",
+                "model": "llama3.1:latest"
+            }
         }
-    }
-
-def get_fullguide_section_definitions():
-    # Example prompts/models; adjust as needed for your full-guide logic
-    return {
-        "tldr": {
-            "title": "TL;DR Summary",
-            # Prompt is direct, does not instruct the model to preface with a heading or restate the prompt
-            "prompt": "Summarize the card's main strengths, weaknesses, and archetypes in 2-4 concise sentences. Do not preface with a heading or restate this prompt.",
-            "model": "llama3.1:latest"
-        },
-        "mechanics": {
-            "title": "Card Mechanics & Interactions",
-            "prompt": "Explain the card's rules, mechanics, and unique interactions. Include edge cases and rules notes.",
-            "model": "llama3.1:latest"
-        },
-        "strategic": {
-            "title": "Strategic Applications",
-            "prompt": "Describe how this card is used strategically. What decks/archetypes want it? What roles does it fill?",
-            "model": "qwen2.5:7b"
-        },
-        "advanced": {
-            "title": "Advanced Techniques",
-            "prompt": "Describe advanced or less obvious uses, tricks, or interactions.",
-            "model": "qwen2.5:7b"
-        },
-        "mistakes": {
-            "title": "Common Mistakes",
-            "prompt": "List common mistakes or misplays involving this card.",
-            "model": "mistral:7b-instruct"
-        },
-        "deckbuilding": {
-            "title": "Deckbuilding & Synergies",
-            "prompt": "Discuss deckbuilding considerations, synergies, and combos for this card.",
-            "model": "llama3.1:latest"
-        },
-        "format": {
-            "title": "Format & Archetype Roles",
-            "prompt": "Explain the card's role in different formats and archetypes.",
-            "model": "qwen2.5:7b"
-        },
-        "scenarios": {
-            "title": "Key Scenarios & Matchups",
-            "prompt": "Describe key scenarios, matchups, and when this card shines or struggles.",
-            "model": "qwen2.5:7b"
-        },
-        "history": {
-            "title": "History & Notable Appearances",
-            "prompt": "Summarize the card's history, notable appearances, and tournament results.",
-            "model": "llama3.1:latest"
-        },
-        "flavor": {
-            "title": "Flavor & Lore",
-            "prompt": "Describe the card's flavor, lore, and story context.",
-            "model": "llama3.1:latest"
-        },
-        "budget": {
-            "title": "Budget & Accessibility",
-            "prompt": "Discuss the card's price, accessibility, and budget alternatives.",
-            "model": "mistral:7b-instruct"
-        },
-        "conclusion": {
-            "title": "Conclusion",
-            "prompt": "Summarize the card's overall value and when to play it.",
-            "model": "llama3.1:latest"
+    else:
+        # Full-guide: comprehensive 12-section format
+        return {
+            "tldr": {
+                "title": "TL;DR Summary",
+                "prompt": "Summarize this Magic: The Gathering card in 3-5 punchy sentences. Highlight its power level, main use cases, and most popular formats—especially Commander, if applicable.",
+                "model": "llama3.1:latest"
+            },
+            "mechanics": {
+                "title": "Card Mechanics & Interactions",
+                "prompt": "Explain this card's rules, keyword abilities, and how it functions on the stack and battlefield. Include edge cases, unusual rules interactions, and any Commander-specific quirks.",
+                "model": "llama3.1:latest"
+            },
+            "strategic": {
+                "title": "Strategic Applications",
+                "prompt": "Describe how this card is used strategically in real decks. What Commander strategies, color identities, or archetypes benefit from it most? Include competitive, casual, or niche builds.",
+                "model": "llama3.1:latest"
+            },
+            "advanced": {
+                "title": "Advanced Techniques",
+                "prompt": "Detail any advanced, creative, or less-obvious uses for this card. Cover synergies, rules tricks, or interactions that strong Commander players would appreciate.",
+                "model": "llama3.1:latest"
+            },
+            "mistakes": {
+                "title": "Common Mistakes",
+                "prompt": "List common mistakes or misplays players make with this card—especially in Commander. Cover timing issues, misunderstood rules, or poor synergies.",
+                "model": "llama3.1:latest"
+            },
+            "deckbuilding": {
+                "title": "Deckbuilding & Synergies",
+                "prompt": "Explain how to build around this card. What Commanders, color identities, themes, or engines does it work with? Include specific synergy cards and combo notes.",
+                "model": "llama3.1:latest"
+            },
+            "format": {
+                "title": "Format & Archetype Roles",
+                "prompt": "Break down the card's impact in Commander and any other formats it's legal in. Where is it competitive, casual, banned, or overlooked?",
+                "model": "llama3.1:latest"
+            },
+            "scenarios": {
+                "title": "Key Scenarios & Matchups",
+                "prompt": "Describe scenarios and matchups where this card excels or fails. In Commander, consider multiplayer politics, board presence, or combos.",
+                "model": "llama3.1:latest"
+            },
+            "history": {
+                "title": "History & Notable Appearances",
+                "prompt": "Summarize this card's history: printings, reprints, tournament presence, EDHREC stats, or iconic decks it appeared in.",
+                "model": "llama3.1:latest"
+            },
+            "flavor": {
+                "title": "Flavor & Lore",
+                "prompt": "Describe the card's flavor, lore, and setting. Tie in world-building elements and character backstory if known.",
+                "model": "llama3.1:latest"
+            },
+            "budget": {
+                "title": "Budget & Accessibility",
+                "prompt": "Discuss the card's price, reprint status, and budget-friendliness. Suggest similar options for budget decks—especially in Commander.",
+                "model": "llama3.1:latest"
+            },
+            "conclusion": {
+                "title": "Conclusion",
+                "prompt": "Wrap up by evaluating how strong or versatile the card is—especially in Commander. Who should include it, and when is it best left out?",
+                "model": "llama3.1:latest"
+            }
         }
-    }
+
 
 class CombinedGuideWorker:
+    def fetch_all_cards(self) -> Optional[list]:
+        """Fetch the full cards collection from the backend for richer context."""
+        try:
+            url = f'{MTGABYSS_BASE_URL}/api/all_cards'
+            response = requests.get(url, timeout=120)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('status') == 'success' and data.get('cards'):
+                    log_api_call("/api/all_cards", "success", f"{len(data['cards']):,} cards fetched for context")
+                    return data['cards']
+                else:
+                    log_api_call("/api/all_cards", "warning", f"no cards returned: {data}")
+                    return None
+            else:
+                log_api_call("/api/all_cards", "error", f"HTTP {response.status_code}: {response.text[:100]}")
+                return None
+        except Exception as e:
+            log_api_call("/api/all_cards", "error", f"request failed: {str(e)}")
+            return None
     def __init__(self, mode: str, gemini_model: str = 'gemini-1.5-flash', ollama_model: str = 'llama3.1:latest', rate_limit: float = 1.0):
         self.mode = mode
         self.gemini_model = gemini_model
@@ -198,24 +257,35 @@ class CombinedGuideWorker:
         self.processed_count = 0
         self.gemini_client = None
         self.ollama_available = OLLAMA_AVAILABLE
+        
+        # Initialize models with better logging
         if GEMINI_AVAILABLE and GEMINI_API_KEY:
             try:
                 genai.configure(api_key=GEMINI_API_KEY)
                 self.gemini_client = genai.GenerativeModel(gemini_model)
-                logger.info(f"Initialized Gemini with model: {gemini_model}")
+                log_model_work("gemini", f"Initialized successfully", f"model: {gemini_model}")
             except Exception as e:
-                logger.error(f"Failed to initialize Gemini: {e}")
+                log_model_work("gemini", f"Initialization failed", str(e))
                 self.gemini_client = None
-        if OLLAMA_AVAILABLE:
-            logger.info(f"Initialized Ollama with model: {ollama_model}")
-        if mode == 'half':
-            self.SECTION_DISPLAY_ORDER = HALFGUIDE_SECTIONS
-            self.SECTION_DISPLAY_MAP = HALFGUIDE_DISPLAY_MAP
-            self.section_definitions = get_halfguide_section_definitions()
+        elif GEMINI_AVAILABLE:
+            log_model_work("gemini", "Available but no API key", "set GEMINI_API_KEY environment variable")
         else:
-            self.SECTION_DISPLAY_ORDER = FULLGUIDE_SECTIONS
-            self.SECTION_DISPLAY_MAP = FULLGUIDE_DISPLAY_MAP
-            self.section_definitions = get_fullguide_section_definitions()
+            log_model_work("gemini", "Not available", "install google-generativeai package")
+            
+        if OLLAMA_AVAILABLE:
+            log_model_work("ollama", f"Initialized successfully", f"model: {ollama_model}")
+        else:
+            log_model_work("ollama", "Not available", "install ollama package")
+            
+        # Use flexible, key-agnostic section definitions
+        self.section_definitions = get_guide_section_definitions(mode)
+        # Preserve order as defined in the section_definitions dict
+        self.SECTION_DISPLAY_ORDER = list(self.section_definitions.keys())
+        
+        log_worker_stats(f"Worker initialized", f"{mode.upper()} mode", f"{len(self.section_definitions)} sections configured")
+        
+        # Fetch all cards for rich context (once per worker)
+        self.all_cards = self.fetch_all_cards()
 
     def get_model_for_section(self, section: str, section_config: Dict = None) -> str:
         if section_config and 'model' in section_config:
@@ -231,7 +301,7 @@ class CombinedGuideWorker:
 
     def generate_with_gemini(self, prompt: str, model_name: str = None) -> Optional[str]:
         if not self.gemini_client:
-            logger.warning("Gemini not available, cannot generate content")
+            log_model_work("gemini", "Unavailable - client not initialized")
             return None
         actual_model = model_name or self.gemini_model
         try:
@@ -243,18 +313,18 @@ class CombinedGuideWorker:
             response = client.generate_content(prompt)
             duration = time.time() - start_time
             if response and response.text:
-                logger.info(f"Gemini ({actual_model}) call: {duration:.2f}s")
+                log_model_work("gemini", f"Generated content", f"{actual_model} | {duration:.2f}s | {len(response.text)} chars")
                 return response.text.strip()
             else:
-                logger.warning(f"Gemini ({actual_model}) returned empty response")
+                log_model_work("gemini", f"Empty response", f"{actual_model} | {duration:.2f}s")
                 return None
         except Exception as e:
-            logger.error(f"Gemini ({actual_model}) generation error: {e}")
+            log_model_work("gemini", f"Generation failed", f"{actual_model} | {str(e)}")
             return None
 
     def generate_with_ollama(self, prompt: str, model_name: str = None) -> Optional[str]:
         if not self.ollama_available:
-            logger.warning("Ollama not available, cannot generate content")
+            log_model_work("ollama", "Unavailable - service not available")
             return None
         actual_model = model_name or self.ollama_model
         try:
@@ -266,13 +336,13 @@ class CombinedGuideWorker:
             )
             duration = time.time() - start_time
             if response and 'response' in response:
-                logger.info(f"Ollama ({actual_model}) call: {duration:.2f}s")
+                log_model_work("ollama", f"Generated content", f"{actual_model} | {duration:.2f}s | {len(response['response'])} chars")
                 return response['response'].strip()
             else:
-                logger.warning(f"Ollama ({actual_model}) returned empty response")
+                log_model_work("ollama", f"Empty response", f"{actual_model} | {duration:.2f}s")
                 return None
         except Exception as e:
-            logger.error(f"Ollama ({actual_model}) generation error: {e}")
+            log_model_work("ollama", f"Generation failed", f"{actual_model} | {str(e)}")
             return None
 
     def generate_section(self, section_key: str, section_config: Dict, card: Dict, prior_sections: Optional[Dict] = None) -> Optional[Dict]:
@@ -299,7 +369,7 @@ class CombinedGuideWorker:
         context_text = ""
         if section_key == "conclusion" and prior_sections:
             context_text = "\n\n---\n\n".join([
-                f"## {self.SECTION_DISPLAY_MAP.get(k, k)}\n\n{prior_sections[k]['content'].strip()}"
+                f"## {self.section_definitions[k]['title'] if 'title' in self.section_definitions[k] else k}\n\n{prior_sections[k]['content'].strip()}"
                 for k in self.SECTION_DISPLAY_ORDER if k != "conclusion" and k in prior_sections and prior_sections[k].get('content')
             ])
             if context_text:
@@ -307,6 +377,8 @@ class CombinedGuideWorker:
 
         # Append the full card JSON for maximum context
         full_card_json = json.dumps(card, indent=2, ensure_ascii=False)
+        # Optionally include all cards for richer context
+        all_cards_json = json.dumps(self.all_cards, indent=2, ensure_ascii=False) if self.all_cards else None
         full_prompt = (
             f"Section: {section_title}\n\n"
             f"{section_prompt}\n\n"
@@ -316,10 +388,15 @@ class CombinedGuideWorker:
             "- Use natural paragraphs, bullet points and tables sparingly\n"
             "- Liberally mention other cards using [[Card Name]] in double brackets\n"
             "- Do NOT mention yourself, the AI, or the analysis process\n"
-            "- Do NOT end with phrases like 'in conclusion'\n"
-            "- Be specific and actionable\n"
+            "- Do NOT end with phrases like 'in conclusion', 'to conclude', 'in summary', 'overall', or 'to sum up'\n"
+            "- Do NOT use meta-commentary about the card being 'underappreciated', 'overlooked', or 'versatile'\n"
+            "- Do NOT mention 'elevating gameplay', 'unlocking strategies', or 'taking to the next level'\n"
+            "- Do NOT refer to the reader directly with 'you', 'your deck', or 'your gameplay'\n"
+            "- Be specific and actionable with concrete examples\n"
+            "- Write as if explaining to an experienced Magic player, not teaching basics\n"
             "\n---\nFull card JSON for reference (all fields, raw):\n"
             f"{full_card_json}\n"
+            + (f"\n---\nAll cards in the format (for card mentions, synergies, and comparisons):\n{all_cards_json}\n" if all_cards_json else "")
         )
         logger.info(f"Generating section '{section_key}' for {card.get('name', 'N/A')} using {model_name}")
         content = None
@@ -386,52 +463,64 @@ class CombinedGuideWorker:
             return False
 
     def run(self, limit: int = None):
-        logger.info(f"MTGAbyss Combined Worker ({'Half-Guide' if self.mode == 'half' else 'Full-Guide'})")
-        logger.info("=" * 30)
-        logger.info(f"Configured Ollama model: {self.ollama_model} ({'✅' if self.ollama_available else '❌'})")
-        logger.info(f"Configured Gemini model: {self.gemini_model} ({'✅' if self.gemini_client else '❌'})")
-        logger.info(f"Rate limit: {self.rate_limit}s between sections")
-        logger.info("Section assignment (user-facing keys and models):")
+        log_worker_stats("Worker starting", f"{self.mode.upper()} mode", f"limit: {limit or 'unlimited'}")
+        logger.info("=" * 50)
+        
+        # Show model availability
+        gemini_status = "✅" if self.gemini_client else "❌"
+        ollama_status = "✅" if self.ollama_available else "❌"
+        log_model_work("status", f"Ollama {ollama_status}", f"model: {self.ollama_model}")
+        log_model_work("status", f"Gemini {gemini_status}", f"model: {self.gemini_model}")
+        
+        logger.info(f"🔧 Rate limit: {self.rate_limit}s between sections")
+        logger.info("🎯 Section assignment (user-facing keys and models):")
         for section_key in self.SECTION_DISPLAY_ORDER:
             if section_key in self.section_definitions:
                 model = self.section_definitions[section_key].get('model', 'unknown')
                 logger.info(f"  {section_key:12}: {model}")
-        logger.info("Press Ctrl+C to stop.")
+        logger.info("🎮 Press Ctrl+C to stop worker")
+        
         def log_api_stats():
             try:
                 resp = requests.get(f"{MTGABYSS_BASE_URL}/api/stats", timeout=10)
                 if resp.status_code == 200:
                     stats = resp.json().get('stats', {})
-                    logger.info(f"[API Stats] Total: {stats.get('total_cards')}, Reviewed: {stats.get('reviewed_cards')}, Legacy: {stats.get('legacy_reviewed_cards')}, Unreviewed: {stats.get('unreviewed_cards')}, Completion: {stats.get('completion_percentage')}%")
+                    log_worker_stats("API Stats", 
+                        f"{stats.get('completion_percentage', 0):.1f}% complete",
+                        f"total: {stats.get('total_cards', 0):,} | reviewed: {stats.get('reviewed_cards', 0):,} | remaining: {stats.get('unreviewed_cards', 0):,}")
                 else:
-                    logger.warning(f"/api/stats returned {resp.status_code}")
+                    log_api_call("/api/stats", "error", f"HTTP {resp.status_code}")
             except Exception as e:
-                logger.warning(f"Failed to fetch /api/stats: {e}")
+                log_api_call("/api/stats", "error", str(e))
         try:
             while limit is None or self.processed_count < limit:
                 card = self.fetch_card_to_process()
                 if not card:
-                    logger.info("No cards available. Waiting 30 seconds...")
+                    log_card_work("Queue empty", "waiting for cards")
                     time.sleep(30)
                     continue
+                    
                 card_name = card.get('name', 'Unknown Card')
                 card_uuid = card.get('uuid')
-                logger.info(f"Processing card: {card_name} (UUID: {card_uuid})")
+                log_card_work("Processing started", card_name, card_uuid, f"{self.mode.upper()} mode")
+                
                 failed_sections = 0
                 completed_sections = 0
                 sections = {}
+                
                 # Process all except conclusion first
                 for section_key in self.SECTION_DISPLAY_ORDER:
                     if section_key == "conclusion":
                         continue
                     section_config = self.section_definitions[section_key]
                     model_provider = self.get_model_for_section(section_key, section_config)
+                    
                     if model_provider == 'gemini' and not self.gemini_client:
-                        logger.warning(f"Skipping section '{section_key}' - Gemini not available")
+                        log_model_work("gemini", f"Skipping section '{section_key}'", "client not available")
                         failed_sections += 1
                         continue
                     elif model_provider == 'ollama' and not self.ollama_available:
-                        logger.warning(f"Skipping section '{section_key}' - Ollama not available")
+                        log_model_work("ollama", f"Skipping section '{section_key}'", "service not available")
                         failed_sections += 1
                         continue
                     section_result = self.generate_section(section_key, section_config, card)
@@ -494,7 +583,7 @@ class CombinedGuideWorker:
                         },
                         'category': 'mtg',
                         'card_data': card,
-                        'has_full_content': len(sections) >= len(self.section_definitions) * 0.8
+                        'has_full_content': len(sections) >= 12
                     }
                     self.send_discord_notification(card, payload)
                 time.sleep(self.rate_limit)
@@ -511,16 +600,31 @@ class CombinedGuideWorker:
             gemini_count = model_strategy.get('gemini_sections', 0)
             ollama_count = model_strategy.get('ollama_sections', 0)
             card_url = f"{MTGABYSS_BASE_URL}/card/{card['uuid']}"
+            # Try to get a good image URL (prefer art_crop, then normal, then small)
+            image_url = None
+            if card.get('image_uris'):
+                image_url = card['image_uris'].get('art_crop') or card['image_uris'].get('normal') or card['image_uris'].get('small')
+            elif card.get('card_faces') and isinstance(card['card_faces'], list) and card['card_faces']:
+                # Double-faced card
+                face = card['card_faces'][0]
+                if face.get('image_uris'):
+                    image_url = face['image_uris'].get('art_crop') or face['image_uris'].get('normal') or face['image_uris'].get('small')
+            # Fallback
+            if not image_url:
+                image_url = f"https://mtgabyss.com/static/mtg_card_back.png"
             embed = {
-                "title": f"📊 {'Half-Guide' if self.mode == 'half' else 'Full-Guide'} Complete",
-                "description": f"**[{card['name']}]({card_url})**\n🔗 {card_url}",
+                "title": f"{'Half-Guide' if self.mode == 'half' else 'Full-Guide'} Complete: {card.get('name', 'Unknown Card')}",
+                "url": card_url,
+                "description": f"**[{card.get('name', 'Unknown Card')}]({card_url})**\nSet: {card.get('set_name', card.get('set', ''))} | Rarity: {card.get('rarity', '')}\n\n[View on MTGAbyss]({card_url})",
                 "color": 0x00ff00,
                 "fields": [
-                    {"name": "🤖 Gemini Sections", "value": str(gemini_count), "inline": True},
-                    {"name": "🦙 Ollama Sections", "value": str(ollama_count), "inline": True},
-                    {"name": "💡 Guide Type", "value": f"{'Half-Guide (6 sections)' if self.mode == 'half' else 'Full-Guide (all sections)'}", "inline": True}
+                    {"name": "Guide Type", "value": f"{'Half-Guide (6 sections)' if self.mode == 'half' else 'Full-Guide (all sections)'}", "inline": True},
+                    {"name": "Gemini Sections", "value": str(gemini_count), "inline": True},
+                    {"name": "Ollama Sections", "value": str(ollama_count), "inline": True},
                 ],
-                "footer": {"text": f"Combined Worker v1.0"}
+                "image": {"url": image_url},
+                "footer": {"text": f"MTGAbyss Combined Worker v1.0"},
+                "timestamp": datetime.now(UTC).isoformat()
             }
             webhook_data = {"embeds": [embed]}
             resp = requests.post(DISCORD_WEBHOOK_URL, json=webhook_data, timeout=10)
@@ -562,30 +666,22 @@ Examples:
     if GEMINI_AVAILABLE and not GEMINI_API_KEY:
         logger.warning("GEMINI_API_KEY not set - Gemini sections will be skipped")
     mode = 'half' if args.half_guides else 'full'
+    # Create the worker with the specified parameters
+    worker = CombinedGuideWorker(
+        mode=mode,
+        gemini_model=args.gemini_model,
+        ollama_model=args.ollama_big_model if args.ollama_big_model else args.ollama_model,
+        rate_limit=args.rate_limit
+    )
+    
     # If --ollama-big-model is set, override all ollama section models
     if args.ollama_big_model:
-        if mode == 'full':
-            section_defs = get_fullguide_section_definitions()
-        else:
-            section_defs = get_halfguide_section_definitions()
+        section_defs = worker.section_definitions.copy()
         for k, v in section_defs.items():
             if v.get('model', '').startswith('llama') or v.get('model', '').startswith('qwen') or v.get('model', '').startswith('mistral'):
                 v['model'] = args.ollama_big_model
-        worker = CombinedGuideWorker(
-            mode=mode,
-            gemini_model=args.gemini_model,
-            ollama_model=args.ollama_big_model,
-            rate_limit=args.rate_limit
-        )
         # Patch the worker's section_definitions to use the big model
         worker.section_definitions = section_defs
-    else:
-        worker = CombinedGuideWorker(
-            mode=mode,
-            gemini_model=args.gemini_model,
-            ollama_model=args.ollama_model,
-            rate_limit=args.rate_limit
-        )
     worker.run(limit=args.limit)
     return 0
 

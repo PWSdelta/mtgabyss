@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ artist_name }} - MTGAbyss Artist{% endblock %}
+
+{% block content %}
+<!-- Hero Unit -->
+<div class="artist-hero" style="background:linear-gradient(90deg,#222 60%,#444 100%);color:#fff;padding:2.5em 2em 2em 2em;margin-bottom:2em;border-radius:1.5em;box-shadow:0 4px 24px #0004;display:flex;align-items:center;gap:2em;">
+  <div style="flex:1;min-width:220px;">
+    <h1 style="font-size:2.5em;margin-bottom:0.2em;">{{ artist_name }}</h1>
+    {% if artist_bio %}
+      <p style="font-size:1.2em;color:#e0e0e0;max-width:700px;">{{ artist_bio }}</p>
+    {% else %}
+      <p style="font-size:1.1em;color:#bbb;">No bio available yet.</p>
+    {% endif %}
+    {% if artist_links %}
+      <div style="margin-top:0.7em;">
+        {% for label, url in artist_links.items() %}
+          <a href="{{ url }}" target="_blank" style="margin-right:1.2em;color:#ffd700;font-weight:bold;">{{ label }}</a>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<h2 style="margin-top:2em;margin-bottom:1.2em;">Cards by {{ artist_name }} with Guides</h2>
+
+<!-- Horizontal Scroller of Cards with Guides -->
+<div style="overflow-x:auto;white-space:nowrap;padding-bottom:1.5em;margin-bottom:2em;">
+  {% for card in cards_with_guides %}
+    <div style="display:inline-block;width:220px;margin-right:1.2em;vertical-align:top;">
+      <a href="/card/{{ card.uuid }}" style="text-decoration:none;">
+        <img src="{{ card.image_uris.art_crop or card.image_uris.normal or card.image_uris.small or '/static/mtg_card_back.png' }}" alt="{{ card.name }}" style="width:100%;border-radius:10px;box-shadow:0 2px 12px #0005;">
+      </a>
+      <div style="margin-top:0.4em;font-weight:bold;color:#222;font-size:1.08em;">{{ card.name }}</div>
+      <div style="font-size:0.97em;color:#888;">{{ card.set_name or card.set|upper }}{% if card.rarity %} • {{ card.rarity|capitalize }}{% endif %}</div>
+    </div>
+  {% endfor %}
+</div>
+
+<!-- Optionally, show all cards by artist in a masonry wall below -->
+<h3 style="margin-top:2.5em;">All Cards by {{ artist_name }}</h3>
+<div id="masonry-gallery" style="column-count:5;column-gap:1.2em;max-width:1800px;margin:0 auto;">
+  {% for card in cards %}
+    <div class="card-masonry-item" style="display:inline-block;width:100%;margin-bottom:1.2em;break-inside:avoid;">
+      <a href="/card/{{ card.uuid }}" style="text-decoration:none;">
+        <img src="{{ card.image_uris.art_crop or card.image_uris.normal or card.image_uris.small or '/static/mtg_card_back.png' }}" alt="{{ card.name }}" style="width:100%;border-radius:10px;box-shadow:0 2px 12px #0005;">
+      </a>
+      <div style="margin-top:0.4em;font-weight:bold;color:#222;font-size:1.08em;">{{ card.name }}</div>
+      <div style="font-size:0.97em;color:#888;">{{ card.set_name or card.set|upper }}{% if card.rarity %} • {{ card.rarity|capitalize }}{% endif %}</div>
+    </div>
+  {% endfor %}
+</div>
+{% endblock %}{% extends "base.html" %}
+{% block title %}{{ artist_name }} - MTGAbyss Artist{% endblock %}
+
+{% block content %}
+<div class="artist-header" style="display:flex;align-items:center;gap:1.5em;margin-bottom:2em;">
+  <div>
+    <h1 style="margin-bottom:0.2em;">{{ artist_name }}</h1>
+    {% if artist_bio %}
+      <p style="font-size:1.1em;color:#666;max-width:600px;">{{ artist_bio }}</p>
+    {% else %}
+      <p style="font-size:1.1em;color:#888;">No bio available yet.</p>
+    {% endif %}
+    {% if artist_links %}
+      <div style="margin-top:0.5em;">
+        {% for label, url in artist_links.items() %}
+          <a href="{{ url }}" target="_blank" style="margin-right:1em;">{{ label }}</a>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<h2 style="margin-top:2em;">Cards by {{ artist_name }}</h2>
+<div class="card-gallery" style="display:flex;flex-wrap:wrap;gap:1.5em;">
+  {% for card in cards %}
+    <div class="card-item" style="width:180px;text-align:center;">
+      <a href="/card/{{ card.uuid }}">
+        <img src="{{ card.image_uris.art_crop or card.image_uris.normal or card.image_uris.small or '/static/mtg_card_back.png' }}" alt="{{ card.name }}" style="width:100%;border-radius:8px;box-shadow:0 2px 8px #0002;">
+      </a>
+      <div style="margin-top:0.5em;font-weight:bold;">{{ card.name }}</div>
+      <div style="font-size:0.95em;color:#888;">{{ card.set_name or card.set|upper }}{% if card.rarity %} • {{ card.rarity|capitalize }}{% endif %}</div>
+    </div>
+  {% endfor %}
+</div>
+{% endblock %}
