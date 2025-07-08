@@ -630,8 +630,8 @@ def artist_detail(slug):
     # Sort cards by release date (newest first)
     artist_cards.sort(key=lambda x: x.get('released_at', '1900-01-01'), reverse=True)
     
-    # Cards with guides (has at least one guide section)
-    cards_with_guides = [card for card in artist_cards if card.get('analysis') and (card['analysis'].get('sections') or card['analysis'].get('content'))]
+    # Cards with guides (has at least 6 sections)
+    cards_with_guides = [card for card in artist_cards if card.get('analysis') and len(card['analysis'].get('sections', {})) >= 6]
     
     # Group cards by set for better organization
     sets_dict = {}
@@ -671,7 +671,10 @@ def artist_index():
         {'$group': {
             '_id': '$artist',
             'card_count': {'$sum': 1},
-            'analyzed_count': {'$sum': {'$cond': [{'$ifNull': ['$analysis', False]}, 1, 0]}},
+            'analyzed_count': {'$sum': {'$cond': [
+                {'$gte': [{'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}}, 6]}, 
+                1, 0
+            ]}},
             'sample_card': {'$first': {'uuid': '$uuid', 'name': '$name', 'image_uris': '$image_uris', 'imageUris': '$imageUris'}}
         }},
         {'$sort': {'card_count': -1}}
