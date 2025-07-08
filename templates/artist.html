@@ -1,86 +1,311 @@
 {% extends "base.html" %}
-{% block title %}{{ artist_name }} - MTGAbyss Artist{% endblock %}
+{% block title %}{{ artist_name }} - MTG Artist - MTGAbyss{% endblock %}
 
 {% block content %}
-<!-- Hero Unit -->
-<div class="artist-hero" style="background:linear-gradient(90deg,#222 60%,#444 100%);color:#fff;padding:2.5em 2em 2em 2em;margin-bottom:2em;border-radius:1.5em;box-shadow:0 4px 24px #0004;display:flex;align-items:center;gap:2em;">
-  <div style="flex:1;min-width:220px;">
-    <h1 style="font-size:2.5em;margin-bottom:0.2em;">{{ artist_name }}</h1>
-    {% if artist_bio %}
-      <p style="font-size:1.2em;color:#e0e0e0;max-width:700px;">{{ artist_bio }}</p>
-    {% else %}
-      <p style="font-size:1.1em;color:#bbb;">No bio available yet.</p>
-    {% endif %}
-    {% if artist_links %}
-      <div style="margin-top:0.7em;">
-        {% for label, url in artist_links.items() %}
-          <a href="{{ url }}" target="_blank" style="margin-right:1.2em;color:#ffd700;font-weight:bold;">{{ label }}</a>
-        {% endfor %}
+<div class="container my-4">
+  <!-- Artist Header -->
+  <div class="row mb-4">
+    <div class="col-12">
+      <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+          <li class="breadcrumb-item"><a href="{{ url_for('search') }}">Home</a></li>
+          <li class="breadcrumb-item"><a href="{{ url_for('artist_index') }}">Artists</a></li>
+          <li class="breadcrumb-item active">{{ artist_name }}</li>
+        </ol>
+      </nav>
+      
+      <div class="artist-hero bg-gradient p-4 rounded-3 mb-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); box-shadow: 0 8px 32px rgba(0,0,0,0.1); border: 2px solid #dee2e6;">
+        <div class="row align-items-center">
+          <div class="col-md-8">
+            <h1 class="display-4 mb-3 fw-bold text-dark">🎨 {{ artist_name }}</h1>
+            <p class="lead mb-0 fs-4 text-dark">Magic: The Gathering Artist</p>
+          </div>
+          <div class="col-md-4 text-end">
+            <div class="d-flex flex-column gap-2">
+              <div class="badge bg-primary text-white fs-6 px-3 py-2 fw-bold">{{ stats.total_cards }} Total Cards</div>
+              <div class="badge bg-success text-white fs-6 px-3 py-2 fw-bold">{{ stats.cards_with_analysis }} With Analysis</div>
+              <div class="badge bg-info text-white fs-6 px-3 py-2 fw-bold">{{ stats.unique_sets }} Sets</div>
+            </div>
+          </div>
+        </div>
       </div>
-    {% endif %}
+    </div>
+  </div>
+  
+  <!-- Quick Stats -->
+  <div class="row mb-4">
+    <div class="col-md-3">
+      <div class="card text-center border-0 shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title text-primary fw-bold fs-3">{{ stats.total_cards }}</h5>
+          <p class="card-text text-dark fw-semibold">Total Cards</p>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card text-center border-0 shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title text-success fw-bold fs-3">{{ stats.cards_with_analysis }}</h5>
+          <p class="card-text text-dark fw-semibold">With Analysis</p>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card text-center border-0 shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title text-info fw-bold fs-3">{{ stats.unique_sets }}</h5>
+          <p class="card-text text-dark fw-semibold">Unique Sets</p>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card text-center border-0 shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title text-warning fw-bold fs-3">{{ ((stats.cards_with_analysis / stats.total_cards) * 100)|round(1) }}%</h5>
+          <p class="card-text text-dark fw-semibold">Analysis Coverage</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  {% if cards_with_guides %}
+  <!-- Cards with Analysis Section -->
+  <div class="row mb-5">
+    <div class="col-12">
+      <h2 class="mb-3 fw-bold text-dark">
+        <i class="fas fa-chart-line text-success"></i> Cards with Analysis
+        <span class="badge bg-success ms-2">{{ cards_with_guides|length }}</span>
+      </h2>
+      
+      <div class="horizontal-scroll-container mb-4">
+        <div class="d-flex gap-3 pb-3" style="overflow-x: auto;">
+          {% for card in cards_with_guides %}
+          <div class="card-item" style="min-width: 200px;">
+            <div class="card">
+              <a href="{{ url_for('card_detail', uuid=card.uuid) }}" class="text-decoration-none">
+                <img src="{{ card|get_card_image('art_crop') or card|get_card_image('normal') or card|get_card_image('small') }}" 
+                     alt="{{ card.name }}" 
+                     class="card-img-top" 
+                     style="height: 140px; object-fit: cover;">
+              </a>
+              <div class="card-body p-2">
+                <h6 class="card-title mb-1">
+                  <a href="{{ url_for('card_detail', uuid=card.uuid) }}" class="text-decoration-none text-dark fw-semibold">
+                    {{ card.name }}
+                  </a>
+                </h6>
+                <small class="text-secondary fw-medium">
+                  {{ card.set_name or card.set|upper }}
+                  {% if card.rarity %}
+                  <span class="badge badge-sm bg-secondary">{{ card.rarity|title }}</span>
+                  {% endif %}
+                </small>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  
+  <!-- All Cards by Set -->
+  <div class="row">
+    <div class="col-12">
+      <h2 class="mb-3 fw-bold text-dark">
+        <i class="fas fa-images text-primary"></i> All Cards by Set
+      </h2>
+      
+      <!-- Set Navigation -->
+      <div class="mb-3">
+        <div class="btn-group" role="group" aria-label="Set navigation">
+          <button type="button" class="btn btn-primary active fw-semibold" onclick="showAllSets()">All Sets</button>
+          {% for set_name, set_cards in sorted_sets[:5] %}
+          <button type="button" class="btn btn-outline-primary fw-semibold" onclick="showSet('{{ set_name|replace("'", "\\'") }}')">{{ set_name }} ({{ set_cards|length }})</button>
+          {% endfor %}
+        </div>
+      </div>
+      
+      <!-- Cards by Set -->
+      {% for set_name, set_cards in sorted_sets %}
+      <div class="set-section mb-4" id="set-{{ set_name|replace(' ', '-')|replace("'", "") }}">
+        <h3 class="h5 mb-3 fw-bold text-dark">
+          <i class="fas fa-folder-open text-info"></i> {{ set_name }}
+          <span class="badge bg-primary ms-2">{{ set_cards|length }} cards</span>
+        </h3>
+        
+        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 row-cols-xl-5 g-3">
+          {% for card in set_cards %}
+          <div class="col">
+            <div class="card h-100 shadow-sm">
+              <a href="{{ url_for('card_detail', uuid=card.uuid) }}" class="text-decoration-none">
+                <img src="{{ card|get_card_image('art_crop') or card|get_card_image('normal') or card|get_card_image('small') }}" 
+                     alt="{{ card.name }}" 
+                     class="card-img-top" 
+                     style="height: 160px; object-fit: cover;">
+              </a>
+              <div class="card-body p-2">
+                <h6 class="card-title mb-1">
+                  <a href="{{ url_for('card_detail', uuid=card.uuid) }}" class="text-decoration-none text-dark fw-semibold">
+                    {{ card.name }}
+                  </a>
+                </h6>
+                <div class="d-flex justify-content-between align-items-center">
+                  <small class="text-secondary fw-medium">
+                    {% if card.rarity %}
+                    <span class="badge badge-sm bg-secondary">{{ card.rarity|title }}</span>
+                    {% endif %}
+                  </small>
+                  {% if card.analysis %}
+                  <small class="text-success">
+                    <i class="fas fa-check-circle"></i>
+                  </small>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
   </div>
 </div>
 
-<h2 style="margin-top:2em;margin-bottom:1.2em;">Cards by {{ artist_name }} with Guides</h2>
+<script>
+function showAllSets() {
+  document.querySelectorAll('.set-section').forEach(section => {
+    section.style.display = 'block';
+  });
+  
+  // Update button states
+  document.querySelectorAll('.btn-group .btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  document.querySelector('.btn-group .btn').classList.add('active');
+}
 
-<!-- Horizontal Scroller of Cards with Guides -->
-<div style="overflow-x:auto;white-space:nowrap;padding-bottom:1.5em;margin-bottom:2em;">
-  {% for card in cards_with_guides %}
-    <div style="display:inline-block;width:220px;margin-right:1.2em;vertical-align:top;">
-      <a href="/card/{{ card.uuid }}" style="text-decoration:none;">
-        <img src="{{ card.image_uris.art_crop or card.image_uris.normal or card.image_uris.small or '/static/mtg_card_back.png' }}" alt="{{ card.name }}" style="width:100%;border-radius:10px;box-shadow:0 2px 12px #0005;">
-      </a>
-      <div style="margin-top:0.4em;font-weight:bold;color:#222;font-size:1.08em;">{{ card.name }}</div>
-      <div style="font-size:0.97em;color:#888;">{{ card.set_name or card.set|upper }}{% if card.rarity %} • {{ card.rarity|capitalize }}{% endif %}</div>
-    </div>
-  {% endfor %}
-</div>
+function showSet(setName) {
+  document.querySelectorAll('.set-section').forEach(section => {
+    section.style.display = 'none';
+  });
+  
+  const setId = setName.replace(/\s+/g, '-').replace(/'/g, '');
+  const targetSet = document.getElementById(`set-${setId}`);
+  if (targetSet) {
+    targetSet.style.display = 'block';
+  }
+  
+  // Update button states
+  document.querySelectorAll('.btn-group .btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  event.target.classList.add('active');
+}
+</script>
 
-<!-- Optionally, show all cards by artist in a masonry wall below -->
-<h3 style="margin-top:2.5em;">All Cards by {{ artist_name }}</h3>
-<div id="masonry-gallery" style="column-count:5;column-gap:1.2em;max-width:1800px;margin:0 auto;">
-  {% for card in cards %}
-    <div class="card-masonry-item" style="display:inline-block;width:100%;margin-bottom:1.2em;break-inside:avoid;">
-      <a href="/card/{{ card.uuid }}" style="text-decoration:none;">
-        <img src="{{ card.image_uris.art_crop or card.image_uris.normal or card.image_uris.small or '/static/mtg_card_back.png' }}" alt="{{ card.name }}" style="width:100%;border-radius:10px;box-shadow:0 2px 12px #0005;">
-      </a>
-      <div style="margin-top:0.4em;font-weight:bold;color:#222;font-size:1.08em;">{{ card.name }}</div>
-      <div style="font-size:0.97em;color:#888;">{{ card.set_name or card.set|upper }}{% if card.rarity %} • {{ card.rarity|capitalize }}{% endif %}</div>
-    </div>
-  {% endfor %}
-</div>
-{% endblock %}{% extends "base.html" %}
-{% block title %}{{ artist_name }} - MTGAbyss Artist{% endblock %}
+<style>
+.horizontal-scroll-container {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #888 #f1f1f1;
+}
 
-{% block content %}
-<div class="artist-header" style="display:flex;align-items:center;gap:1.5em;margin-bottom:2em;">
-  <div>
-    <h1 style="margin-bottom:0.2em;">{{ artist_name }}</h1>
-    {% if artist_bio %}
-      <p style="font-size:1.1em;color:#666;max-width:600px;">{{ artist_bio }}</p>
-    {% else %}
-      <p style="font-size:1.1em;color:#888;">No bio available yet.</p>
-    {% endif %}
-    {% if artist_links %}
-      <div style="margin-top:0.5em;">
-        {% for label, url in artist_links.items() %}
-          <a href="{{ url }}" target="_blank" style="margin-right:1em;">{{ label }}</a>
-        {% endfor %}
-      </div>
-    {% endif %}
-  </div>
-</div>
+.horizontal-scroll-container::-webkit-scrollbar {
+  height: 8px;
+}
 
-<h2 style="margin-top:2em;">Cards by {{ artist_name }}</h2>
-<div class="card-gallery" style="display:flex;flex-wrap:wrap;gap:1.5em;">
-  {% for card in cards %}
-    <div class="card-item" style="width:180px;text-align:center;">
-      <a href="/card/{{ card.uuid }}">
-        <img src="{{ card.image_uris.art_crop or card.image_uris.normal or card.image_uris.small or '/static/mtg_card_back.png' }}" alt="{{ card.name }}" style="width:100%;border-radius:8px;box-shadow:0 2px 8px #0002;">
-      </a>
-      <div style="margin-top:0.5em;font-weight:bold;">{{ card.name }}</div>
-      <div style="font-size:0.95em;color:#888;">{{ card.set_name or card.set|upper }}{% if card.rarity %} • {{ card.rarity|capitalize }}{% endif %}</div>
-    </div>
-  {% endfor %}
-</div>
+.horizontal-scroll-container::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+.horizontal-scroll-container::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 10px;
+}
+
+.horizontal-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+.badge-sm {
+  font-size: 0.7em;
+}
+</style>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+  .artist-hero {
+    text-shadow: none;
+  }
+  
+  .artist-hero h1, .artist-hero p {
+    color: #2c3e50 !important;
+    font-weight: 700;
+  }
+  
+  .card-title a {
+    color: #2c3e50 !important;
+    font-weight: 600;
+  }
+  
+  .card-title a:hover {
+    color: #3498db !important;
+  }
+  
+  .text-secondary {
+    color: #6c757d !important;
+    font-weight: 500;
+  }
+  
+  .card {
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  
+  .btn-group .btn {
+    font-weight: 600;
+    border-width: 2px;
+  }
+  
+  .set-section h3 {
+    border-bottom: 2px solid #e9ecef;
+    padding-bottom: 0.5rem;
+    margin-bottom: 1rem;
+  }
+  
+  .breadcrumb {
+    background-color: #f8f9fa;
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+  }
+  
+  .breadcrumb a {
+    color: #495057;
+    font-weight: 500;
+    text-decoration: none;
+  }
+  
+  .breadcrumb a:hover {
+    color: #007bff;
+  }
+  
+  .badge {
+    font-weight: 600;
+    font-size: 0.875rem;
+  }
+  
+  /* Ensure all headings are dark and visible */
+  h1, h2, h3, h4, h5, h6 {
+    color: #2c3e50 !important;
+  }
+</style>
 {% endblock %}

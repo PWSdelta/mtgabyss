@@ -1,6 +1,7 @@
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response, abort
 from datetime import datetime
 from pymongo import MongoClient
+from bson import ObjectId
 import os
 import logging
 import markdown
@@ -102,6 +103,7 @@ db = client.mtgabyss
 cards = db.cards
 mentions_histogram = db.mentions_histogram  # UUID-based mention tracking: { uuid: count }
 priority_regen_queue = db.priority_regen_queue  # Simple priority queue for /regen requests
+decks = db.decks  # Add deck collection
 
 # Simple worker position tracking to prevent same-card pulls
 _worker_positions = {
@@ -376,6 +378,16 @@ def markdown_filter(text):
         return ''
     return md.convert(text)
 
+@app.template_filter('number_format')
+def number_format_filter(value):
+    """Format numbers with commas for thousands separators"""
+    if value is None:
+        return '0'
+    try:
+        return f"{int(value):,}"
+    except (ValueError, TypeError):
+        return str(value)
+
 @app.template_filter('link_card_mentions')
 def link_card_mentions(text, current_card_name=None):
     if not text:
@@ -624,38 +636,208 @@ def random_card_redirect():
 # --- ARTIST ROUTES ---
 @app.route('/artist/<slug>')
 def artist_detail(slug):
-    # Find all cards by this artist
-    artist_cards = list(cards.find({'artist': {'$exists': True, '$ne': ''}}))
+    # Find all cards by this artist more efficiently
+    artist_cards = list(cards.find({
+        'artist': {'$exists': True, '$ne': ''}
+    }, {
+        '_id': 0,  # Exclude ObjectId to prevent serialization issues
+        'uuid': 1, 'name': 1, 'artist': 1, 'set': 1, 'set_name': 1, 
+        'rarity': 1, 'image_uris': 1, 'imageUris': 1, 'analysis': 1,
+        'cmc': 1, 'colors': 1, 'type_line': 1, 'released_at': 1
+    }))
+    
+    # Filter by slugified artist name
     artist_cards = [card for card in artist_cards if slugify(card.get('artist', '')) == slug]
     if not artist_cards:
         abort(404)
+    
     artist_name = artist_cards[0].get('artist', slug)
+    
+    # Sort cards by release date (newest first)
+    artist_cards.sort(key=lambda x: x.get('released_at', '1900-01-01'), reverse=True)
+    
     # Cards with guides (has at least one guide section)
     cards_with_guides = [card for card in artist_cards if card.get('analysis') and (card['analysis'].get('sections') or card['analysis'].get('content'))]
+    
+    # Group cards by set for better organization
+    sets_dict = {}
+    for card in artist_cards:
+        set_name = card.get('set_name', card.get('set', 'Unknown Set'))
+        if set_name not in sets_dict:
+            sets_dict[set_name] = []
+        sets_dict[set_name].append(card)
+    
+    # Sort sets by most recent card in each set
+    sorted_sets = sorted(sets_dict.items(), key=lambda x: max(card.get('released_at', '1900-01-01') for card in x[1]), reverse=True)
+    
+    # Get stats
+    total_cards = len(artist_cards)
+    cards_with_analysis = len(cards_with_guides)
+    unique_sets = len(sets_dict)
+    
     return render_template(
         'artist.html',
         artist_name=artist_name,
         artist_slug=slug,
         cards_with_guides=cards_with_guides,
-        all_cards=artist_cards
+        all_cards=artist_cards,
+        sorted_sets=sorted_sets,
+        stats={
+            'total_cards': total_cards,
+            'cards_with_analysis': cards_with_analysis,
+            'unique_sets': unique_sets
+        }
     )
 
 @app.route('/artists')
 def artist_index():
-    # Get all unique artists
-    artist_cursor = cards.find({'artist': {'$exists': True, '$ne': ''}}, {'artist': 1})
-    artist_set = set()
-    for doc in artist_cursor:
-        artist = doc.get('artist')
-        if artist:
-            artist_set.add(artist)
-    # Build list of (name, slug, count)
+    # Get all unique artists with aggregation for better performance
+    pipeline = [
+        {'$match': {'artist': {'$exists': True, '$ne': ''}}},
+        {'$group': {
+            '_id': '$artist',
+            'card_count': {'$sum': 1},
+            'analyzed_count': {'$sum': {'$cond': [{'$ifNull': ['$analysis', False]}, 1, 0]}},
+            'sample_card': {'$first': {'uuid': '$uuid', 'name': '$name', 'image_uris': '$image_uris', 'imageUris': '$imageUris'}}
+        }},
+        {'$sort': {'card_count': -1}}
+    ]
+    
+    artist_data = list(cards.aggregate(pipeline))
+    
+    # Build enhanced artist list
     artist_list = []
-    for artist in sorted(artist_set):
-        slug = slugify(artist)
-        count = cards.count_documents({'artist': artist})
-        artist_list.append({'name': artist, 'slug': slug, 'count': count})
+    for artist_doc in artist_data:
+        artist_name = artist_doc['_id']
+        slug = slugify(artist_name)
+        sample_card = artist_doc['sample_card']
+        
+        # Clean sample card data to remove any ObjectId references
+        if sample_card:
+            sample_card = {
+                'uuid': sample_card.get('uuid'),
+                'name': sample_card.get('name'),
+                'image_uris': sample_card.get('image_uris'),
+                'imageUris': sample_card.get('imageUris')
+            }
+        
+        artist_list.append({
+            'name': artist_name,
+            'slug': slug,
+            'count': artist_doc['card_count'],
+            'analyzed_count': artist_doc['analyzed_count'],
+            'sample_card': sample_card
+        })
+    
     return render_template('artist_index.html', artists=artist_list)
+
+# Deck routes
+@app.route('/decks')
+def deck_index():
+    """Display a paginated index of all decks"""
+    try:
+        page = int(request.args.get('page', 1))
+        per_page = 20
+        skip = (page - 1) * per_page
+        
+        # Get total count
+        total_decks = decks.count_documents({})
+        
+        # Get decks for current page
+        deck_list = list(decks.find({}, {
+            '_id': 1,  # Keep _id for the deck detail links
+            'name': 1,
+            'commander': 1,
+            'format': 1,
+            'total_cards': 1,
+            'colors': 1,
+            'date_added': 1
+        }).sort('date_added', -1).skip(skip).limit(per_page))
+        
+        # Convert ObjectIds to strings for template compatibility
+        for deck in deck_list:
+            if '_id' in deck:
+                deck['_id'] = str(deck['_id'])
+        
+        # Calculate pagination info
+        total_pages = math.ceil(total_decks / per_page)
+        has_prev = page > 1
+        has_next = page < total_pages
+        
+        return render_template('deck_index.html',
+                             decks=deck_list,
+                             page=page,
+                             total_pages=total_pages,
+                             has_prev=has_prev,
+                             has_next=has_next,
+                             total_decks=total_decks,
+                             per_page=per_page)
+    except Exception as e:
+        logger.error(f"Error in deck_index: {e}")
+        return f"Error loading decks: {e}", 500
+
+@app.route('/deck/<deck_id>')
+def deck_detail(deck_id):
+    """Display detailed view of a specific deck"""
+    try:
+        # Get deck from database
+        deck = decks.find_one({'_id': ObjectId(deck_id)})
+        if not deck:
+            abort(404)
+        
+        # Convert ObjectId to string for template compatibility
+        if '_id' in deck:
+            deck['_id'] = str(deck['_id'])
+        
+        # Get full card data for each card in the deck
+        deck_cards = []
+        for card_entry in deck.get('cards', []):
+            card_name = card_entry.get('name')
+            quantity = card_entry.get('quantity', 1)
+            
+            # Find card in database (exclude _id to avoid ObjectId issues)
+            card = cards.find_one({'name': card_name}, {'_id': 0})
+            if card:
+                deck_cards.append({
+                    'card': card,
+                    'quantity': quantity
+                })
+        
+        return render_template('deck.html',
+                             deck=deck,
+                             deck_cards=deck_cards)
+    except Exception as e:
+        logger.error(f"Error in deck_detail: {e}")
+        return f"Error loading deck: {e}", 500
+
+@app.route('/api/generate_deck_review/<deck_id>', methods=['POST'])
+def generate_deck_review(deck_id):
+    """Generate an AI review for a deck"""
+    try:
+        # Get deck from database
+        deck = decks.find_one({'_id': ObjectId(deck_id)})
+        if not deck:
+            return jsonify({'error': 'Deck not found'}), 404
+        
+        # Simple AI review (placeholder - you can enhance this)
+        review = f"This {deck.get('format', 'unknown format')} deck '{deck.get('name', 'Unnamed')}' "
+        
+        if deck.get('commander'):
+            review += f"is built around the commander {deck['commander']}. "
+        
+        total_cards = deck.get('total_cards', 0)
+        review += f"It contains {total_cards} cards total. "
+        
+        colors = deck.get('colors', [])
+        if colors:
+            review += f"The deck runs {', '.join(colors)} colors. "
+        
+        review += "This appears to be a well-constructed deck with good synergy between its components."
+        
+        return jsonify({'review': review})
+    except Exception as e:
+        logger.error(f"Error generating deck review: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # Worker API endpoints
 @app.route('/api/stats', methods=['GET'])
@@ -1769,6 +1951,7 @@ def get_most_mentioned():
             if not card:
                 continue
                 
+           
             card_data = {
                 'uuid': card.get('uuid'),
                 'scryfall_id': card.get('scryfall_id'),
@@ -1970,7 +2153,7 @@ def get_card_image_filter(card, image_type='normal'):
     return get_card_image_uri(card, image_type)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=2357)
 
 def delete_duplicate_cards():
     """Delete duplicate cards, keeping only the oldest printing of each card."""

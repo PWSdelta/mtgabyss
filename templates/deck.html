@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+
+{% block title %}{{ deck.name or 'Unnamed Deck' }} - MTGAbyss{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-12">
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="{{ url_for('search') }}">Home</a></li>
+                    <li class="breadcrumb-item"><a href="{{ url_for('deck_index') }}">Decks</a></li>
+                    <li class="breadcrumb-item active">{{ deck.name or 'Unnamed Deck' }}</li>
+                </ol>
+            </nav>
+            
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h1>🃏 {{ deck.name or 'Unnamed Deck' }}</h1>
+                
+                {% if not deck.ai_review %}
+                <button class="btn btn-primary" onclick="generateReview()">
+                    🤖 Generate AI Review
+                </button>
+                {% endif %}
+            </div>
+            
+            <!-- Deck Stats -->
+            <div class="row mb-4">
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">Deck Overview</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-6">
+                                    <strong>Mainboard:</strong> {{ deck.mainboard|length if deck.mainboard else 0 }} cards
+                                </div>
+                                <div class="col-6">
+                                    <strong>Sideboard:</strong> {{ deck.sideboard|length if deck.sideboard else 0 }} cards
+                                </div>
+                            </div>
+                            {% if deck.source_file %}
+                            <div class="text-muted small mt-2">
+                                Source: {{ deck.source_file }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- AI Review Section -->
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">🤖 AI Analysis</h5>
+                        </div>
+                        <div class="card-body" id="ai-review-section">
+                            {% if deck.ai_review %}
+                                <div class="badge bg-success mb-2">Reviewed</div>
+                                <div id="ai-review-content">
+                                    {{ deck.ai_review | markdown | safe }}
+                                </div>
+                            {% else %}
+                                <div class="badge bg-warning mb-2">Pending</div>
+                                <p class="text-muted">No AI review available yet.</p>
+                                <button class="btn btn-outline-primary btn-sm" onclick="generateReview()">
+                                    Generate Review
+                                </button>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Deck Cards -->
+            <div class="row">
+                <!-- Mainboard -->
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">Mainboard ({{ deck.mainboard|length if deck.mainboard else 0 }})</h5>
+                        </div>
+                        <div class="card-body">
+                            {% if deck_cards %}
+                                <div class="row">
+                                    {% for card_entry in deck_cards %}
+                                        {% if card_entry.section == 'mainboard' %}
+                                        <div class="col-12 mb-2">
+                                            <div class="d-flex align-items-center">
+                                                <span class="badge bg-secondary me-2">{{ card_entry.quantity }}x</span>
+                                                {% if card_entry.card %}
+                                                    <a href="{{ url_for('card_detail', uuid=card_entry.card.uuid) }}" 
+                                                       class="text-decoration-none">
+                                                        {{ card_entry.card.name }}
+                                                    </a>
+                                                    {% if card_entry.card.image_uris and card_entry.card.image_uris.small %}
+                                                        <img src="{{ card_entry.card.image_uris.small }}" 
+                                                             class="ms-2" 
+                                                             style="width: 30px; height: auto;"
+                                                             alt="{{ card_entry.card.name }}">
+                                                    {% endif %}
+                                                {% else %}
+                                                    <span class="text-muted">{{ card_entry.name or 'Unknown Card' }}</span>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                        {% endif %}
+                                    {% endfor %}
+                                </div>
+                            {% else %}
+                                <p class="text-muted">No mainboard cards found.</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Sideboard -->
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">Sideboard ({{ deck.sideboard|length if deck.sideboard else 0 }})</h5>
+                        </div>
+                        <div class="card-body">
+                            {% if deck_cards %}
+                                {% for card_entry in deck_cards %}
+                                    {% if card_entry.section == 'sideboard' %}
+                                    <div class="mb-2">
+                                        <div class="d-flex align-items-center">
+                                            <span class="badge bg-secondary me-2">{{ card_entry.quantity }}x</span>
+                                            {% if card_entry.card %}
+                                                <a href="{{ url_for('card_detail', uuid=card_entry.card.uuid) }}" 
+                                                   class="text-decoration-none small">
+                                                    {{ card_entry.card.name }}
+                                                </a>
+                                            {% else %}
+                                                <span class="text-muted small">{{ card_entry.name or 'Unknown Card' }}</span>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                {% endfor %}
+                            {% else %}
+                                <p class="text-muted">No sideboard cards.</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+async function generateReview() {
+    const button = event.target;
+    const originalText = button.textContent;
+    button.textContent = 'Generating...';
+    button.disabled = true;
+    
+    try {
+        const response = await fetch(`/api/generate_deck_review/{{ deck._id }}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+            // Update the AI review section
+            const reviewSection = document.getElementById('ai-review-section');
+            reviewSection.innerHTML = `
+                <div class="badge bg-success mb-2">Reviewed</div>
+                <div id="ai-review-content">
+                    ${result.review.replace(/\n/g, '<br>')}
+                </div>
+            `;
+            
+            // Hide the generate button
+            button.style.display = 'none';
+        } else {
+            alert('Error generating review: ' + result.message);
+            button.textContent = originalText;
+            button.disabled = false;
+        }
+    } catch (error) {
+        alert('Error generating review: ' + error.message);
+        button.textContent = originalText;
+        button.disabled = false;
+    }
+}
+</script>
+{% endblock %}
