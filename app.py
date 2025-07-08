@@ -24,31 +24,41 @@ def elapsed_time():
     else:
         return f"+{elapsed/3600:.1f}h"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(levelname)-8s | %(name)-15s | %(message)s'
-)
-logger = logging.getLogger('MTGAbyss')
-
-# Set up colored logging for console (if available)
-try:
-    import colorlog
-    console_handler = colorlog.StreamHandler()
-    console_handler.setFormatter(colorlog.ColoredFormatter(
-        '%(log_color)s%(levelname)-8s | %(name)-15s | %(message)s',
-        log_colors={
-            'DEBUG': 'cyan',
-            'INFO': 'green',
-            'WARNING': 'yellow',
-            'ERROR': 'red',
-            'CRITICAL': 'bold_red',
-        }
-    ))
-    logger.handlers.clear()
-    logger.addHandler(console_handler)
-    logger.info("🎨 Colored logging enabled")
-except ImportError:
-    logger.info("📝 Standard logging active (install colorlog for colors)")
+# Only configure logging once to prevent duplicate logs
+if not logging.getLogger('MTGAbyss').handlers:
+    # Set up colored logging for console (if available)
+    try:
+        import colorlog
+        console_handler = colorlog.StreamHandler()
+        console_handler.setFormatter(colorlog.ColoredFormatter(
+            '%(log_color)s%(levelname)-8s | %(name)-15s | %(message)s',
+            log_colors={
+                'DEBUG': 'cyan',
+                'INFO': 'green',
+                'WARNING': 'yellow',
+                'ERROR': 'red',
+                'CRITICAL': 'bold_red',
+            }
+        ))
+        
+        # Configure the MTGAbyss logger specifically
+        logger = logging.getLogger('MTGAbyss')
+        logger.setLevel(logging.INFO)
+        logger.handlers.clear()  # Clear any existing handlers
+        logger.addHandler(console_handler)
+        logger.propagate = False  # Don't propagate to root logger
+        logger.info("🎨 Colored logging enabled")
+    except ImportError:
+        # Fallback to basic logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(levelname)-8s | %(name)-15s | %(message)s'
+        )
+        logger = logging.getLogger('MTGAbyss')
+        logger.info("📝 Standard logging active (install colorlog for colors)")
+else:
+    # Logger already configured, just get it
+    logger = logging.getLogger('MTGAbyss')
 
 def log_card_action(action, card_name, uuid, extra_info=""):
     """Helper for consistent card-related logging"""
@@ -152,7 +162,7 @@ def add_to_priority_queue(uuid, reason='manual'):
             },
             upsert=True
         )
-        # Also add to to_regenerate collection
+        # Also add to to_regen collection
         to_regen_collection = db.to_regenerate
         to_regen_collection.update_one(
             {'uuid': uuid},
@@ -308,66 +318,30 @@ def delete_duplicate_cards_and_queue():
 
 delete_duplicate_cards_and_queue()
 
-# Log startup information
-total_cards = cards.count_documents({})
-cards_with_analysis = cards.count_documents({'analysis': {'$exists': True}})
-logger.info(f"🚀 MTGAbyss backend starting | {total_cards:,} total cards | {cards_with_analysis:,} with analysis")
+# Log startup information - count cards by guide completion level
+half_guides = cards.count_documents({
+    'analysis.sections': {'$exists': True},
+    '$expr': {
+        '$gte': [
+            {'$size': {'$objectToArray': '$analysis.sections'}},
+            6  # Half guides have 6+ sections
+        ]
+    }
+})
+full_guides = cards.count_documents({
+    'analysis.sections': {'$exists': True},
+    '$expr': {
+        '$gte': [
+            {'$size': {'$objectToArray': '$analysis.sections'}},
+            12  # Full guides have 12+ sections
+        ]
+    }
+})
+logger.info(f"🚀 MTGAbyss backend starting | {half_guides:,} half guides (6+ sections) | {full_guides:,} full guides (12+ sections)")
 
 
-# --- Initialize priority queue on startup with 100 most popular EDHREC cards ---
-def initialize_priority_queue_with_top_edhrec():
-    """Populate the priority queue with the 100 most popular unique cards by EDHREC rank."""
-    priority_collection = db.priority_cards
-    to_regen_collection = db.to_regenerate
-    # Clear any existing priority queue and to_regenerate collection
-    priority_collection.delete_many({})
-    to_regen_collection.delete_many({})
-    # Find top 100 unique cards by EDHREC rank (deduped by name, oldest printing)
-    pipeline = [
-        {"$match": {"edhrec_rank": {"$exists": True, "$ne": None}, "lang": "en"}},
-        {"$sort": {"edhrec_rank": 1, "released_at": 1}},
-        {"$group": {"_id": "$name", "card": {"$first": "$$ROOT"}}},
-        {"$sort": {"card.edhrec_rank": 1}},
-        {"$limit": 100}
-    ]
-    top_cards = list(cards.aggregate(pipeline))
-    priority_docs = []
-    regen_docs = []
-    now = datetime.now()
-    for i, group in enumerate(top_cards):
-        card = group["card"]
-        # Insert into priority queue
-        priority_docs.append({
-            "uuid": card["uuid"],
-            "name": card["name"],
-            "priority_order": i + 1,
-            "has_analysis": card.get("has_full_content", False),
-            "submitted_at": now,
-            "processed": False
-        })
-        # Insert into to_regenerate collection (brief info)
-        regen_docs.append({
-            "uuid": card["uuid"],
-            "name": card["name"],
-            "edhrec_rank": card.get("edhrec_rank"),
-            "set": card.get("set"),
-            "submitted_at": now,
-            "reason": "top_edhrec_init"
-        })
-    if priority_docs:
-        priority_collection.insert_many(priority_docs)
-        logger.info(f"📋 Priority queue initialized with top {len(priority_docs)} EDHREC cards")
-        try:
-            priority_collection.create_index('uuid', unique=True)
-            priority_collection.create_index('priority_order')
-            priority_collection.create_index('processed')
-        except Exception:
-            pass
-    if regen_docs:
-        to_regen_collection.insert_many(regen_docs)
-        logger.info(f"📝 to_regenerate collection initialized with top {len(regen_docs)} EDHREC cards")
-
-initialize_priority_queue_with_top_edhrec()
+# --- Priority queue will be managed externally - no auto-initialization ---
+# Workers will pull from existing priority_cards collection or fall back to EDHREC-based assignment
 
 # Create Markdown instance with desired extensions
 md = markdown.Markdown(extensions=['extra', 'codehilite', 'tables'])
@@ -734,17 +708,20 @@ def artist_index():
 # Deck routes
 @app.route('/decks')
 def deck_index():
-    """Display a paginated index of all decks"""
+    """Display a paginated index of Commander decks (99+ cards)"""
     try:
         page = int(request.args.get('page', 1))
         per_page = 20
         skip = (page - 1) * per_page
         
-        # Get total count
-        total_decks = decks.count_documents({})
+        # Filter for Commander decks only
+        filter_query = {'format': 'Commander Deck'}
+        
+        # Get total count of Commander decks
+        total_decks = decks.count_documents(filter_query)
         
         # Get decks for current page
-        deck_list = list(decks.find({}, {
+        deck_list = list(decks.find(filter_query, {
             '_id': 1,  # Keep _id for the deck detail links
             'name': 1,
             'commander': 1,
@@ -760,7 +737,7 @@ def deck_index():
                 deck['_id'] = str(deck['_id'])
         
         # Calculate pagination info
-        total_pages = math.ceil(total_decks / per_page)
+        total_pages = math.ceil(total_decks / per_page) if total_decks > 0 else 1
         has_prev = page > 1
         has_next = page < total_pages
         
@@ -873,89 +850,42 @@ def api_stats():
 
 @app.route('/api/get_random_unreviewed', methods=['GET'])
 def get_random_unreviewed():
-    """Get cards for worker processing using new EDHREC popularity-based assignment"""
+    """Get the most popular EDHREC card that needs work (< 6 sections)"""
     try:
-        # Optional query parameters
-        limit = int(request.args.get('limit', 1))  # How many cards to return
-        mode = request.args.get('mode', 'full-guide')  # 'half-guide' or 'full-guide'
+        limit = int(request.args.get('limit', 1))
+        mode = request.args.get('mode', 'full-guide')  # Keep for compatibility but treat both the same
         
-        # FRESH QUERY LOGIC: Regenerate the database query each time to account for newly completed cards
-        # Different logic for half-guide vs full-guide to ensure they get different cards
-        
-        if mode == 'half-guide':
-            # Half-guide: Get cards that need work, prioritize LESS popular cards (higher EDHREC rank)
-            pipeline = [
-                {'$match': {
-                    'edhrec_rank': {'$exists': True, '$ne': None},
-                    '$expr': {
-                        '$lt': [
-                            {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
-                            6  # Half-guide needs 6 sections
-                        ]
-                    }
-                }},
-                {'$sort': {'edhrec_rank': -1, 'released_at': 1}},  # Higher rank = less popular (REVERSE ORDER)
-                {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
-                {'$sort': {'best_printing.edhrec_rank': -1}},  # Sort by rank descending (least popular first)
-                {'$limit': 50},  # Take 50 least popular cards that need work
-                {'$replaceRoot': {'newRoot': '$best_printing'}}
-            ]
-            explanation = f"half-guide: least popular cards that need 6-section guides"
-        else:
-            # Full-guide: Get cards that need work, prioritize MORE popular cards (lower EDHREC rank)
-            pipeline = [
-                {'$match': {
-                    'edhrec_rank': {'$exists': True, '$ne': None},
-                    '$expr': {
-                        '$lt': [
-                            {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
-                            12  # Full-guide needs 12 sections
-                        ]
-                    }
-                }},
-                {'$sort': {'edhrec_rank': 1, 'released_at': 1}},  # Lower rank = more popular
-                {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
-                {'$sort': {'best_printing.edhrec_rank': 1}},  # Sort by rank ascending (most popular first)
-                {'$limit': 50},  # Take 50 most popular cards that need work
-                {'$replaceRoot': {'newRoot': '$best_printing'}}
-            ]
-            explanation = f"full-guide: most popular cards that need 12-section guides"
+        # Simple: Get most popular EDHREC-ranked card that has < 6 sections
+        pipeline = [
+            {'$match': {
+                'edhrec_rank': {'$exists': True, '$ne': None, '$type': 'number', '$gte': 1},  # Must have valid EDHREC rank
+                'lang': 'en',  # English cards only
+                '$expr': {
+                    '$lt': [
+                        {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
+                        6  # Both modes need cards with < 6 sections
+                    ]
+                }
+            }},
+            {'$sort': {'edhrec_rank': 1, 'released_at': 1}},  # Most popular first
+            {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
+            {'$sort': {'best_printing.edhrec_rank': 1}},
+            {'$limit': limit},
+            {'$replaceRoot': {'newRoot': '$best_printing'}}
+        ]
         
         available_cards = list(cards.aggregate(pipeline))
-        
-        if not available_cards:
-            # Fall back to any cards that need work if no EDHREC cards found
-            section_target = 6 if mode == 'half-guide' else 12
-            fallback_pipeline = [
-                {'$match': {
-                    '$expr': {
-                        '$lt': [
-                            {'$size': {'$objectToArray': {'$ifNull': ['$analysis.sections', {}]}}},
-                            section_target
-                        ]
-                    }
-                }},
-                {'$sort': {'released_at': 1}},
-                {'$group': {'_id': '$name', 'best_printing': {'$first': '$$ROOT'}}},
-                {'$limit': 50},
-                {'$replaceRoot': {'newRoot': '$best_printing'}}
-            ]
-            available_cards = list(cards.aggregate(fallback_pipeline))
-            explanation = f"{mode}: fallback cards that need {section_target} sections"
         
         if not available_cards:
             return jsonify({
                 'status': 'no_cards',
                 'message': 'No cards found that need work',
-                'queue_info': {'mode': mode, 'explanation': 'No cards with incomplete analysis'}
+                'queue_info': {'mode': mode, 'explanation': 'No cards with < 6 sections'}
             }), 404
         
-        # Take the first available card (since query is already sorted appropriately)
-        selected_cards = available_cards[:limit]
-        
-        # Convert to the expected format
+        # Convert to expected format
         result_cards = []
-        for card in selected_cards:
+        for card in available_cards:
             card_data = {
                 'uuid': card.get('uuid'),
                 'scryfall_id': card.get('scryfall_id'),
@@ -972,33 +902,27 @@ def get_random_unreviewed():
                 'image_uris': card.get('image_uris', {}),
                 'prices': card.get('prices', {}),
                 'edhrec_rank': card.get('edhrec_rank'),
-                'priority_source': 'edhrec_fresh_query',
-                'queue_reason': 'fresh_popularity_assignment'
+                'priority_source': 'simple_edhrec',
+                'queue_reason': 'most_popular_needs_work'
             }
             # Remove None values
             card_data = {k: v for k, v in card_data.items() if v is not None}
             result_cards.append(card_data)
         
-        # Log selection info with current section counts
-        card_info = []
-        for i, c in enumerate(result_cards[:3]):
-            # Get actual section count from the selected card data
-            original_card = selected_cards[i]
-            current_sections = len(original_card.get('analysis', {}).get('sections', {}))
-            card_info.append(f"{c['name']} (rank:{c.get('edhrec_rank', 'N/A')}, sections:{current_sections})")
-        if len(result_cards) > 3:
-            card_info.append("...")
-        
-        log_worker_action(mode, f"Fresh EDHREC query", f"{', '.join(card_info)} | {explanation} | pool: {len(available_cards)}")
+        # Simple logging
+        if result_cards:
+            card = result_cards[0]
+            current_sections = len(available_cards[0].get('analysis', {}).get('sections', {}))
+            log_worker_action(mode, f"Card assignment", f"{card['name']} (rank:{card.get('edhrec_rank', 'N/A')}, sections:{current_sections})")
 
         return jsonify({
             'status': 'success',
             'cards': result_cards,
             'returned_count': len(result_cards),
             'selection_info': {
-                'type': 'fresh_edhrec_query',
+                'type': 'simple_edhrec',
                 'mode': mode,
-                'explanation': explanation,
+                'explanation': 'Most popular card with < 6 sections',
                 'total_available': len(available_cards),
                 'query_timestamp': datetime.now().isoformat()
             }
@@ -2153,7 +2077,7 @@ def get_card_image_filter(card, image_type='normal'):
     return get_card_image_uri(card, image_type)
 
 if __name__ == '__main__':
-    app.run(debug=True, port=2357)
+    app.run(debug=True, host='0.0.0.0', port=2357)
 
 def delete_duplicate_cards():
     """Delete duplicate cards, keeping only the oldest printing of each card."""
@@ -2189,3 +2113,50 @@ def delete_duplicate_cards():
 
 # Call the function to clean the database
 delete_duplicate_cards()
+
+@app.route('/api/get_card_sections', methods=['GET'])
+def get_card_sections():
+    """
+    Get existing sections for a card to avoid regenerating already completed content.
+    """
+    try:
+        card_uuid = request.args.get('uuid')
+        if not card_uuid:
+            return jsonify({'status': 'error', 'message': 'uuid parameter required'}), 400
+
+        # Find the card first
+        card = cards.find_one({'uuid': card_uuid})
+        if not card:
+            return jsonify({'status': 'error', 'message': 'Card not found'}), 404
+
+        # Find all existing sections for this card
+        existing_sections = []
+        if 'analysis' in card and card['analysis']:
+            analysis = card['analysis']
+            if 'sections' in analysis:
+                for section_key, section_data in analysis['sections'].items():
+                    if isinstance(section_data, dict) and 'content' in section_data:
+                        existing_sections.append({
+                            'component_type': section_key,
+                            'component_title': section_data.get('title', section_key),
+                            'content': section_data.get('content', ''),
+                            'model_used': section_data.get('model_used', 'unknown'),
+                            'generated_at': section_data.get('generated_at', ''),
+                            'created_at': section_data.get('created_at', '')
+                        })
+
+        log_api_stats("get_card_sections", "success", f"card: {card.get('name', 'Unknown')} | sections: {len(existing_sections)}")
+        return jsonify({
+            'status': 'success',
+            'card_name': card.get('name', 'Unknown'),
+            'uuid': card_uuid,
+            'sections': existing_sections,
+            'total_sections': len(existing_sections)
+        })
+
+    except Exception as e:
+        log_api_stats("get_card_sections", "error", str(e))
+        return jsonify({
+            'status': 'error',
+            'message': f'Server error: {str(e)}'
+        }), 500

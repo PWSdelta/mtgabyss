@@ -10,10 +10,10 @@ A unified worker script for generating either half-guides (6-section minimal) or
 - Merges logic from worker_halfguides.py and worker_prime.py for maintainability.
 
 Usage:
-  python workers_combined.py --half-guides
-  python workers_combined.py --full-guides
-  python workers_combined.py --half-guides --limit 100
-  python workers_combined.py --full-guides --rate-limit 2.0
+  python worker_cards.py --half-guides
+  python worker_cards.py --full-guides
+  python worker_cards.py --half-guides --limit 100
+  python worker_cards.py --full-guides --rate-limit 2.0
 """
 
 import argparse
@@ -62,31 +62,39 @@ def elapsed_time():
     else:
         return f"+{elapsed/3600:.1f}h"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(levelname)-8s | %(name)-15s | %(message)s'
-)
+# Configure logging (prevent duplicate logs)
 logger = logging.getLogger('MTGWorker')
 
-# Set up colored logging for console (if available)
-try:
-    import colorlog
-    console_handler = colorlog.StreamHandler()
-    console_handler.setFormatter(colorlog.ColoredFormatter(
-        '%(log_color)s%(levelname)-8s | %(name)-15s | %(message)s',
-        log_colors={
-            'DEBUG': 'cyan',
-            'INFO': 'green',
-            'WARNING': 'yellow',
-            'ERROR': 'red',
-            'CRITICAL': 'bold_red',
-        }
-    ))
-    logger.handlers.clear()
-    logger.addHandler(console_handler)
-    logger.info("🎨 Worker colored logging enabled")
-except ImportError:
-    logger.info("📝 Worker standard logging active (install colorlog for colors)")
+# Only configure if not already configured
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(levelname)-8s | %(name)-15s | %(message)s'
+    )
+    
+    # Set up colored logging for console (if available)
+    try:
+        import colorlog
+        console_handler = colorlog.StreamHandler()
+        console_handler.setFormatter(colorlog.ColoredFormatter(
+            '%(log_color)s%(levelname)-8s | %(name)-15s | %(message)s',
+            log_colors={
+                'DEBUG': 'cyan',
+                'INFO': 'green',
+                'WARNING': 'yellow',
+                'ERROR': 'red',
+                'CRITICAL': 'bold_red',
+            }
+        ))
+        logger.handlers.clear()
+        logger.addHandler(console_handler)
+        logger.propagate = False  # Prevent propagation to root logger
+        logger.info("🎨 Worker colored logging enabled")
+    except ImportError:
+        logger.info("📝 Worker standard logging active (install colorlog for colors)")
+else:
+    # Logger already configured
+    logger.info("📝 Worker logging already configured")
 
 def log_card_work(action, card_name, uuid="", extra_info=""):
     """Helper for consistent card work logging"""
@@ -134,7 +142,7 @@ def get_guide_section_definitions(mode: str):
         return {
             "tldr": {
                 "title": "TL;DR Summary",
-                "prompt": "Provide a clear and concise summary of this card's main strengths, typical uses, and impact in Commander decks. Mention other relevant formats only if it enhances understanding.",
+                "prompt": "Provide a clear and concise summary of this card's main strengths, typical uses, and impact in Commander decks. Synthesize the key insights from the detailed analysis sections to give readers the essential information they need. Mention other relevant formats only if it enhances understanding.",
                 "model": "llama3.1:latest"
             },
             "mechanics": {
@@ -168,7 +176,7 @@ def get_guide_section_definitions(mode: str):
         return {
             "tldr": {
                 "title": "TL;DR Summary",
-                "prompt": "Summarize this Magic: The Gathering card in 3-5 punchy sentences. Highlight its power level, main use cases, and most popular formats—especially Commander, if applicable.",
+                "prompt": "Summarize this Magic: The Gathering card in 3-5 punchy sentences. Synthesize the key insights from the detailed analysis sections to highlight its power level, main use cases, and most popular formats—especially Commander, if applicable.",
                 "model": "llama3.1:latest"
             },
             "mechanics": {
@@ -230,25 +238,6 @@ def get_guide_section_definitions(mode: str):
 
 
 class CombinedGuideWorker:
-    def fetch_all_cards(self) -> Optional[list]:
-        """Fetch the full cards collection from the backend for richer context."""
-        try:
-            url = f'{MTGABYSS_BASE_URL}/api/all_cards'
-            response = requests.get(url, timeout=120)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('status') == 'success' and data.get('cards'):
-                    log_api_call("/api/all_cards", "success", f"{len(data['cards']):,} cards fetched for context")
-                    return data['cards']
-                else:
-                    log_api_call("/api/all_cards", "warning", f"no cards returned: {data}")
-                    return None
-            else:
-                log_api_call("/api/all_cards", "error", f"HTTP {response.status_code}: {response.text[:100]}")
-                return None
-        except Exception as e:
-            log_api_call("/api/all_cards", "error", f"request failed: {str(e)}")
-            return None
     def __init__(self, mode: str, gemini_model: str = 'gemini-1.5-flash', ollama_model: str = 'llama3.1:latest', rate_limit: float = 1.0):
         self.mode = mode
         self.gemini_model = gemini_model
@@ -283,9 +272,6 @@ class CombinedGuideWorker:
         self.SECTION_DISPLAY_ORDER = list(self.section_definitions.keys())
         
         log_worker_stats(f"Worker initialized", f"{mode.upper()} mode", f"{len(self.section_definitions)} sections configured")
-        
-        # Fetch all cards for rich context (once per worker)
-        self.all_cards = self.fetch_all_cards()
 
     def get_model_for_section(self, section: str, section_config: Dict = None) -> str:
         if section_config and 'model' in section_config:
@@ -327,8 +313,16 @@ class CombinedGuideWorker:
             log_model_work("ollama", "Unavailable - service not available")
             return None
         actual_model = model_name or self.ollama_model
+        
+        # Log prompt size for diagnosis
+        prompt_size = len(prompt)
+        if prompt_size > 10000:
+            log_model_work("ollama", f"Large prompt detected", f"size: {prompt_size:,} chars")
+        
         try:
             start_time = time.time()
+            log_model_work("ollama", f"Starting generation", f"{actual_model} | prompt: {prompt_size:,} chars")
+            
             response = ollama.generate(
                 model=actual_model,
                 prompt=prompt,
@@ -342,7 +336,8 @@ class CombinedGuideWorker:
                 log_model_work("ollama", f"Empty response", f"{actual_model} | {duration:.2f}s")
                 return None
         except Exception as e:
-            log_model_work("ollama", f"Generation failed", f"{actual_model} | {str(e)}")
+            duration = time.time() - start_time
+            log_model_work("ollama", f"Generation failed", f"{actual_model} | {duration:.2f}s | {str(e)}")
             return None
 
     def generate_section(self, section_key: str, section_config: Dict, card: Dict, prior_sections: Optional[Dict] = None) -> Optional[Dict]:
@@ -366,19 +361,9 @@ class CombinedGuideWorker:
         ]
         card_context = "\n".join(card_context_lines)
 
+        # Temporarily disable context for TL;DR and conclusion to improve performance
         context_text = ""
-        if section_key == "conclusion" and prior_sections:
-            context_text = "\n\n---\n\n".join([
-                f"## {self.section_definitions[k]['title'] if 'title' in self.section_definitions[k] else k}\n\n{prior_sections[k]['content'].strip()}"
-                for k in self.SECTION_DISPLAY_ORDER if k != "conclusion" and k in prior_sections and prior_sections[k].get('content')
-            ])
-            if context_text:
-                context_text = f"\n\nANALYSIS OF PREVIOUS SECTIONS:\n{context_text}\n\n"
 
-        # Append the full card JSON for maximum context
-        full_card_json = json.dumps(card, indent=2, ensure_ascii=False)
-        # Optionally include all cards for richer context
-        all_cards_json = json.dumps(self.all_cards, indent=2, ensure_ascii=False) if self.all_cards else None
         full_prompt = (
             f"Section: {section_title}\n\n"
             f"{section_prompt}\n\n"
@@ -394,11 +379,13 @@ class CombinedGuideWorker:
             "- Do NOT refer to the reader directly with 'you', 'your deck', or 'your gameplay'\n"
             "- Be specific and actionable with concrete examples\n"
             "- Write as if explaining to an experienced Magic player, not teaching basics\n"
-            "\n---\nFull card JSON for reference (all fields, raw):\n"
-            f"{full_card_json}\n"
-            + (f"\n---\nAll cards in the format (for card mentions, synergies, and comparisons):\n{all_cards_json}\n" if all_cards_json else "")
         )
-        logger.info(f"Generating section '{section_key}' for {card.get('name', 'N/A')} using {model_name}")
+        
+        # Log prompt size for debugging
+        prompt_size = len(full_prompt)
+        if prompt_size > 5000:
+            logger.warning(f"Large prompt for section '{section_key}': {prompt_size:,} characters")
+        logger.info(f"Generating section '{section_key}' for {card.get('name', 'N/A')} using {model_name} (prompt: {prompt_size:,} chars)")
         content = None
         if model_provider == 'gemini':
             content = self.generate_with_gemini(full_prompt, model_name)
@@ -414,6 +401,40 @@ class CombinedGuideWorker:
         else:
             logger.error(f"Failed to generate section '{section_key}' with {model_name}")
             return None
+
+    def fetch_existing_sections(self, card_uuid: str) -> Dict[str, Dict]:
+        """Fetch existing sections for a card from the database to avoid regenerating them."""
+        try:
+            url = f'{MTGABYSS_BASE_URL}/api/get_card_sections'
+            params = {'uuid': card_uuid}
+            response = requests.get(url, params=params, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('status') == 'success' and data.get('sections'):
+                    existing_sections = {}
+                    for section in data['sections']:
+                        section_key = section.get('component_type', section.get('type', ''))
+                        if section_key and section_key in self.section_definitions:
+                            existing_sections[section_key] = {
+                                'title': section.get('title', section.get('component_title', '')),
+                                'content': section.get('content', section.get('component_content', '')),
+                                'model_used': section.get('model_used', 'unknown'),
+                                'generated_at': section.get('generated_at', section.get('created_at', ''))
+                            }
+                    log_card_work("Found existing sections", f"card {card_uuid[:8]}...", "", f"{len(existing_sections)} sections already exist")
+                    return existing_sections
+                else:
+                    log_card_work("No existing sections", f"card {card_uuid[:8]}...", "", "starting fresh")
+                    return {}
+            elif response.status_code == 404:
+                log_card_work("No existing sections", f"card {card_uuid[:8]}...", "", "card not found or no sections")
+                return {}
+            else:
+                log_api_call("/api/get_card_sections", "error", f"HTTP {response.status_code}")
+                return {}
+        except Exception as e:
+            log_api_call("/api/get_card_sections", "error", str(e))
+            return {}
 
     def fetch_card_to_process(self) -> Optional[Dict]:
         try:
@@ -508,13 +529,16 @@ class CombinedGuideWorker:
                 card_uuid = card.get('uuid')
                 log_card_work("Processing started", card_name, card_uuid, f"{self.mode.upper()} mode")
                 
+                # Fetch existing sections to avoid regeneration
+                existing_sections = self.fetch_existing_sections(card_uuid)
+                
                 failed_sections = 0
                 completed_sections = 0
                 sections = {}
                 
-                # Process all except conclusion first
+                # Process all sections except tldr and conclusion first (tldr needs context from other sections)
                 for section_key in self.SECTION_DISPLAY_ORDER:
-                    if section_key == "conclusion":
+                    if section_key in ["tldr", "conclusion"]:
                         continue
                     section_config = self.section_definitions[section_key]
                     model_provider = self.get_model_for_section(section_key, section_config)
@@ -527,24 +551,64 @@ class CombinedGuideWorker:
                         log_model_work("ollama", f"Skipping section '{section_key}'", "service not available")
                         failed_sections += 1
                         continue
-                    section_result = self.generate_section(section_key, section_config, card)
-                    if section_result:
-                        if self.submit_section_component(card_uuid, section_key, section_result, card):
-                            completed_sections += 1
-                            sections[section_key] = section_result
+                    
+                    # Check if this section already exists
+                    if section_key in existing_sections:
+                        logger.info(f"Section '{section_key}' already exists for {card_name}, skipping regeneration")
+                        sections[section_key] = existing_sections[section_key]
+                        completed_sections += 1
+                    else:
+                        section_result = self.generate_section(section_key, section_config, card)
+                        if section_result:
+                            if self.submit_section_component(card_uuid, section_key, section_result, card):
+                                completed_sections += 1
+                                sections[section_key] = section_result
+                            else:
+                                failed_sections += 1
                         else:
                             failed_sections += 1
-                        time.sleep(self.rate_limit)
-                    else:
+                
+                # Now generate TL;DR with context from completed sections
+                if "tldr" in self.section_definitions:
+                    tldr_config = self.section_definitions["tldr"]
+                    tldr_provider = self.get_model_for_section("tldr", tldr_config)
+                    
+                    # Check if TL;DR already exists
+                    if "tldr" in existing_sections:
+                        log_card_work("Skipping existing section", card_name, card_uuid, "'tldr' already exists")
+                        sections["tldr"] = existing_sections["tldr"]
+                        completed_sections += 1
+                    elif (tldr_provider == 'gemini' and not self.gemini_client) or (tldr_provider == 'ollama' and not self.ollama_available):
+                        logger.warning("Skipping section 'tldr' - required model not available")
                         failed_sections += 1
+                    else:
+                        log_card_work("Generating new section", card_name, card_uuid, "'tldr' with prior context")
+                        tldr_result = self.generate_section("tldr", tldr_config, card, prior_sections=sections)
+                        if tldr_result:
+                            if self.submit_section_component(card_uuid, "tldr", tldr_result, card):
+                                completed_sections += 1
+                                sections["tldr"] = tldr_result
+                            else:
+                                failed_sections += 1
+                            time.sleep(self.rate_limit)
+                        else:
+                            failed_sections += 1
+                
                 # Now process conclusion with context from previous sections
                 if "conclusion" in self.section_definitions:
                     conclusion_config = self.section_definitions["conclusion"]
                     conclusion_provider = self.get_model_for_section("conclusion", conclusion_config)
-                    if (conclusion_provider == 'gemini' and not self.gemini_client) or (conclusion_provider == 'ollama' and not self.ollama_available):
+                    
+                    # Check if conclusion already exists
+                    if "conclusion" in existing_sections:
+                        log_card_work("Skipping existing section", card_name, card_uuid, "'conclusion' already exists")
+                        sections["conclusion"] = existing_sections["conclusion"]
+                        completed_sections += 1
+                    elif (conclusion_provider == 'gemini' and not self.gemini_client) or (conclusion_provider == 'ollama' and not self.ollama_available):
                         logger.warning("Skipping section 'conclusion' - required model not available")
                         failed_sections += 1
                     else:
+                        log_card_work("Generating new section", card_name, card_uuid, "'conclusion' missing")
                         conclusion_result = self.generate_section("conclusion", conclusion_config, card, prior_sections=sections)
                         if conclusion_result:
                             if self.submit_section_component(card_uuid, "conclusion", conclusion_result, card):
@@ -556,7 +620,12 @@ class CombinedGuideWorker:
                         else:
                             failed_sections += 1
                 self.processed_count += 1
-                simple_log(f"Completed {card_name} ({self.processed_count} total, {completed_sections} sections, {failed_sections} failed)")
+                
+                # Calculate how many sections were reused vs generated
+                existing_count = len(existing_sections)
+                generated_count = completed_sections - existing_count
+                
+                simple_log(f"Completed {card_name} ({self.processed_count} total, {completed_sections} sections, {failed_sections} failed, {existing_count} reused, {generated_count} generated)")
                 if self.processed_count % 3 == 0:
                     log_api_stats()
                 if DISCORD_WEBHOOK_URL:
@@ -645,10 +714,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python workers_combined.py --half-guides
-  python workers_combined.py --full-guides
-  python workers_combined.py --half-guides --limit 100
-  python workers_combined.py --full-guides --rate-limit 2.0
+  python worker_cards.py --half-guides
+  python worker_cards.py --full-guides
+  python worker_cards.py --half-guides --limit 100
+  python worker_cards.py --full-guides --rate-limit 2.0
         """
     )
     group = parser.add_mutually_exclusive_group(required=True)
