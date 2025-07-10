@@ -41,7 +41,7 @@ try:
     OLLAMA_AVAILABLE = True
 except ImportError:
     OLLAMA_AVAILABLE = False
-    print("Warning: ollama not installed. Ollama sections will be skipped.")
+    print("Warning: ollama not installed. Olloma sections will be skipped.")
 
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
 MTGABYSS_BASE_URL = os.getenv('MTGABYSS_BASE_URL', 'https://mtgabyss.com')
@@ -452,6 +452,7 @@ class CombinedGuideWorker:
                     return card
             elif response.status_code == 404:
                 logger.info("No cards available for processing")
+                # TODO: Could add fallback to fetch from pending_guide collection here
                 return None
             else:
                 logger.warning(f"Unexpected response: {response.status_code} - {response.text}")
