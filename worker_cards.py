@@ -445,8 +445,7 @@ class CombinedGuideWorker:
                 'limit': 1, 
                 'mode': mode_param,
                 'prioritize_commanders': True,  # Always prioritize commanders first
-                'sort_by': 'edhrec_rank',       # Sort by EDHREC rank (ascending - most popular first)
-                'fallback_to_pending': True     # Fall back to pending collection if main is empty
+                'sort_by': 'edhrec_rank'        # Sort by EDHREC rank (ascending - most popular first)
             }
             response = requests.get(url, params=params, timeout=60)
             if response.status_code == 200:
@@ -456,10 +455,8 @@ class CombinedGuideWorker:
                     edhrec_rank = card.get('edhrec_rank', 'N/A')
                     is_commander = card.get('is_commander', False)
                     priority = card.get('priority_level', 'normal')
-                    from_pending = data.get('from_pending', False)
                     commander_indicator = "👑" if is_commander else "🃏"
-                    collection_indicator = "📦" if from_pending else "🏠"
-                    logger.info(f"{commander_indicator}{collection_indicator} Got card: {card.get('name')} (rank: {edhrec_rank}, priority: {priority}, mode: {mode_param})")
+                    logger.info(f"{commander_indicator} Got card: {card.get('name')} (rank: {edhrec_rank}, priority: {priority}, mode: {mode_param})")
                     return card
             elif response.status_code == 404:
                 logger.info("No cards available for processing")
