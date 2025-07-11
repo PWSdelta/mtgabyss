@@ -38,22 +38,28 @@ def get_mongodb_client():
 
 def count_guide_sections(card):
     """Count the number of guide sections a card has"""
+    # First check if we already have section_count stored
+    if card.get('section_count') is not None:
+        return card['section_count']
+    
     sections = 0
     
-    # Check various possible section fields
+    # Check guide_sections field (primary method used by direct worker)
     if card.get('guide_sections'):
-        if isinstance(card['guide_sections'], list):
-            sections = len(card['guide_sections'])
-        elif isinstance(card['guide_sections'], dict):
+        if isinstance(card['guide_sections'], dict):
+            # Count non-empty sections
+            sections = len([k for k, v in card['guide_sections'].items() if v and v.get('content')])
+        elif isinstance(card['guide_sections'], list):
             sections = len(card['guide_sections'])
     
+    # Check legacy sections field
     if card.get('sections'):
         if isinstance(card['sections'], list):
             sections = max(sections, len(card['sections']))
         elif isinstance(card['sections'], dict):
             sections = max(sections, len(card['sections']))
     
-    # Check for individual section fields
+    # Check for individual section fields (legacy method)
     section_fields = ['tldr', 'mechanics', 'strategic', 'advanced', 'mistakes', 'conclusion',
                      'deckbuilding', 'format', 'scenarios', 'history', 'flavor', 'budget']
     
