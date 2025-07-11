@@ -74,3 +74,5 @@ flask_cache/
 
 zzz.txt
 /AllDeckFiles/
+json/oracle-cards.json
+*oracle-cards.json
